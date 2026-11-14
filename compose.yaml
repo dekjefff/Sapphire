@@ -1,0 +1,135 @@
+name: sapphire
+
+services:
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [sapphire_ingress]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      DATABASE_URL: postgresql://sapphire:${POSTGRES_PASSWORD:-change-this-local-password}@postgres:5432/sapphire
+      REDIS_URL: redis://redis:6379/0
+      ARTIFACT_DIR: /artifacts
+      CORS_ORIGINS: http://localhost:${WEB_PORT:-3000},http://127.0.0.1:${WEB_PORT:-3000}
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+    volumes:
+      - artifacts:/artifacts
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks: [sapphire_internal, sapphire_ingress]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/health').then(async r=>process.exit(r.ok && (await r.json()).status==='ok'?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 8
+      start_period: 15s
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: ./apps/api
+    command: ["node", "dist/worker.js"]
+    environment:
+      DATABASE_URL: postgresql://sapphire:${POSTGRES_PASSWORD:-change-this-local-password}@postgres:5432/sapphire
+      REDIS_URL: redis://redis:6379/0
+      ARTIFACT_DIR: /artifacts
+    volumes:
+      - artifacts:/artifacts
+    depends_on:
+      api:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+    networks: [sapphire_internal]
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16.6-alpine
+    environment:
+      POSTGRES_DB: sapphire
+      POSTGRES_USER: sapphire
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-this-local-password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [sapphire_internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sapphire -d sapphire"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  flyway:
+    image: flyway/flyway:12.11.0
+    command:
+      - -url=jdbc:postgresql://postgres:5432/sapphire
+      - -user=sapphire
+      - -password=${POSTGRES_PASSWORD:-change-this-local-password}
+      - -connectRetries=60
+      - -locations=filesystem:/flyway/sql
+      - migrate
+    volumes:
+      - ./apps/api/migrations:/flyway/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [sapphire_internal]
+
+  redis:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks: [sapphire_internal]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  juiceshop:
+    image: bkimminich/juice-shop:v17.1.1
+    networks: [sapphire_internal]
+    healthcheck:
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+networks:
+  sapphire_internal:
+    driver: bridge
+    internal: true
+  sapphire_ingress:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  artifacts:

@@ -1,0 +1,31 @@
+.status {
+  border-radius: 5px;
+  background: #f0f4f1;
+  color: #69756e;
+  font:
+    9px 'DM Mono',
+    monospace;
+  padding: 5px 7px;
+  text-transform: uppercase;
+}
+
+.queued {
+  background: #fff7e8;
+  color: #aa7b22;
+}
+
+.running {
+  background: #edf5ff;
+  color: #4974a7;
+}
+
+.completed {
+  background: #eaf7f0;
+  color: #287a58;
+}
+
+.failed,
+.cancelled {
+  background: #fff0ee;
+  color: #ae5148;
+}
