@@ -1,0 +1,27 @@
+FROM node:22.14-alpine@sha256:9bef0ef1e268f60627da9ba7d7605e8831d5b56ad07487d24d1aa386336d1944 AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build && npm prune --omit=dev --no-audit --no-fund
+
+FROM semgrep/semgrep:1.185.0@sha256:67518c174185a2043fdbed16c70631b79209499b3671178e7194379b48295a0d AS semgrep
+FROM aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb AS trivy
+
+FROM semgrep AS runtime
+ENV NODE_ENV=production PATH=/usr/local/bin:/usr/bin:/bin:/opt/semgrep/bin
+COPY --from=build /usr/local/bin/node /usr/local/bin/node
+COPY --from=build /usr/local/lib/node_modules /usr/local/lib/node_modules
+COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
+WORKDIR /app
+COPY --from=build /app/package.json ./package.json
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY scanner-config ./scanner-config
+RUN mkdir -p /opt/semgrep/bin \
+    && ln -s /usr/bin/semgrep /opt/semgrep/bin/semgrep \
+    && node --version | grep -F 'v22.14.0' \
+    && semgrep --version | grep -F '1.185.0' \
+    && trivy --version | grep -F 'Version: 0.76.2'
+CMD ["node", "dist/worker.js"]
