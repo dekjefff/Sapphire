@@ -1,0 +1,33 @@
+:root {
+  --color-ink: #17231f;
+  --color-muted: #75817c;
+  --color-line: #e6ebe7;
+  --color-green: #147e66;
+  --color-green-pale: #eff7f3;
+  --color-background: #f7f9f7;
+  --color-white: #fff;
+  --shadow-panel: 0 2px 8px #183c3010;
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-ink);
+  font-family: 'DM Sans', Arial, sans-serif;
+  font-size: 14px;
+}
+
+button,
+input {
+  font: inherit;
+}

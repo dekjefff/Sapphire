@@ -1,0 +1,24 @@
+{
+  "name": "sapphire-web",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "format": "prettier --write \"app/**/*.{ts,tsx,css}\" \"components/**/*.{ts,tsx,css}\" \"hooks/**/*.{ts,tsx}\" \"lib/**/*.ts\" next.config.ts tsconfig.json package.json .prettierrc.json",
+    "format:check": "prettier --check \"app/**/*.{ts,tsx,css}\" \"components/**/*.{ts,tsx,css}\" \"hooks/**/*.{ts,tsx}\" \"lib/**/*.ts\" next.config.ts tsconfig.json package.json .prettierrc.json"
+  },
+  "dependencies": {
+    "next": "16.4.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.13.4",
+    "@types/react": "19.0.8",
+    "@types/react-dom": "19.0.3",
+    "prettier": "3.10.1",
+    "typescript": "5.7.3"
+  }
+}
