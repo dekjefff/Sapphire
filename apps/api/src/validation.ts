@@ -6,6 +6,12 @@ export const createAssessmentSchema = z.object({
   project_name: text(120),
   repository_path: text(2048),
   target_url: z.url().max(2048),
+  source_type: z.literal("local_path").default("local_path"),
+}).strict();
+
+export const createZipAssessmentSchema = z.object({
+  project_name: text(120),
+  target_url: z.url().max(2048),
 }).strict();
 
 export function validateTarget(value: string): string {

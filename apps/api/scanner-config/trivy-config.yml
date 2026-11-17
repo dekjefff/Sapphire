@@ -1,0 +1,29 @@
+scan:
+  scanners:
+    - vuln
+    - secret
+  offline: true
+  parallel: 1
+  skip-version-check: true
+  disable-telemetry: true
+  skip-dirs:
+    - "**/node_modules"
+    - "**/.next"
+    - "**/dist"
+    - "**/build"
+    - "**/vendor"
+    - "**/coverage"
+    - "**/out"
+    - "**/.turbo"
+    - "**/.cache"
+    - "**/target"
+    - "**/.venv"
+    - "**/venv"
+    - "**/__pycache__"
+    - "**/.pytest_cache"
+    - "**/.mypy_cache"
+    - "**/.gradle"
+    - "**/.git"
+db:
+  skip-update: true
+  java-skip-update: true

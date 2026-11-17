@@ -13,8 +13,9 @@ interface NewAssessmentFormProps {
 
 const initialForm: AssessmentInput = {
   project_name: 'Juice Shop demo',
-  repository_path: './samples/juice-shop',
+  repository_path: '/workspace',
   target_url: 'http://juiceshop:3000',
+  source_type: 'local_path',
 };
 
 export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAssessmentFormProps) {
@@ -39,7 +40,7 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
         </div>
         <div>
           <h2 id="new-assessment-title">New assessment</h2>
-          <p>Provide a project and an in-scope local target.</p>
+          <p>Choose a local repository folder or a ZIP archive.</p>
         </div>
       </div>
 
@@ -55,18 +56,25 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
           />
         </label>
         <label>
-          Repository path
-          <input
-            required
-            maxLength={2048}
-            value={form.repository_path}
-            onChange={(event) => setForm({ ...form, repository_path: event.target.value })}
-            placeholder="Local path or repository reference"
-          />
-          <span className={styles.hint}>
-            Recorded as project metadata; source intake is not enabled yet.
-          </span>
+          Source type
+          <select value={form.source_type} onChange={(event) => setForm({ ...form, source_type: event.target.value as 'local_path' | 'zip', source_file: undefined })}>
+            <option value="local_path">Mounted local repository</option>
+            <option value="zip">ZIP upload (up to 100 MB)</option>
+          </select>
         </label>
+        {form.source_type === 'local_path' ? (
+          <label>
+            Repository path
+            <input required maxLength={2048} value={form.repository_path} onChange={(event) => setForm({ ...form, repository_path: event.target.value })} placeholder="/workspace/my-repository" />
+            <span className={styles.hint}>Use an absolute path inside a configured workspace root mounted into the API and worker.</span>
+          </label>
+        ) : (
+          <label>
+            Repository ZIP
+            <input required type="file" accept=".zip,application/zip" onChange={(event) => setForm({ ...form, source_file: event.target.files?.[0] })} />
+            <span className={styles.hint}>Include source and manifests; exclude node_modules, .git, generated folders (.next, dist, build, vendor), symlinks, and junctions. Limits: 100 MB ZIP, 250 MB expanded, 20,000 files, 10 MB/file. Invalid entries or exceeded limits can cause rejection.</span>
+          </label>
+        )}
         <label>
           Target URL
           <input
@@ -77,7 +85,7 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
             placeholder="http://juiceshop:3000"
           />
           <span className={styles.hint}>
-            Foundation scope accepts localhost or the isolated Juice Shop service.
+            This milestone records scope and inspects source locally; it does not make target requests.
           </span>
         </label>
 

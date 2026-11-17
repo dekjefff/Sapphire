@@ -9,13 +9,13 @@ services:
     environment:
       NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-8000}
     ports:
-      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+      - "127.0.0.1:8080:8080"
     depends_on:
       api:
         condition: service_healthy
     networks: [sapphire_ingress]
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -29,11 +29,15 @@ services:
       DATABASE_URL: postgresql://sapphire:${POSTGRES_PASSWORD:-change-this-local-password}@postgres:5432/sapphire
       REDIS_URL: redis://redis:6379/0
       ARTIFACT_DIR: /artifacts
-      CORS_ORIGINS: http://localhost:${WEB_PORT:-3000},http://127.0.0.1:${WEB_PORT:-3000}
+      INTAKE_DIR: /intake
+      WORKSPACE_ROOTS: /workspace
+      CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - artifacts:/artifacts
+      - intake:/intake
+      - "${WORKSPACE_HOST_PATH:-.}:/workspace:ro"
     depends_on:
       flyway:
         condition: service_completed_successfully
@@ -56,15 +60,74 @@ services:
       DATABASE_URL: postgresql://sapphire:${POSTGRES_PASSWORD:-change-this-local-password}@postgres:5432/sapphire
       REDIS_URL: redis://redis:6379/0
       ARTIFACT_DIR: /artifacts
+      INTAKE_DIR: /intake
+      WORKSPACE_ROOTS: /workspace
+      SCAN_WORK_DIR: /scan-work
     volumes:
       - artifacts:/artifacts
+      - intake:/intake
+      - scan_work:/scan-work
+      - "${WORKSPACE_HOST_PATH:-.}:/workspace:ro"
     depends_on:
       api:
         condition: service_healthy
+      scanner-runner:
+        condition: service_started
       flyway:
         condition: service_completed_successfully
     networks: [sapphire_internal]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 256
+    mem_limit: 3g
+    cpus: 2
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=512m"]
     restart: unless-stopped
+
+  scanner-runner:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.scanner
+    command: ["node", "dist/scanner-runner.js"]
+    environment:
+      SCAN_WORK_DIR: /scan-work
+      SCANNER_CONFIG_DIR: /app/scanner-config
+      WORKSPACE_ROOTS: /workspace
+      INTAKE_DIR: /intake
+      TRIVY_CACHE_DIR: /tmp/trivy-cache
+      SEMGREP_VERSION: 1.185.0
+      TRIVY_VERSION: 0.76.2
+    volumes:
+      - scan_work:/scan-work
+      - "${WORKSPACE_HOST_PATH:-.}:/workspace:ro"
+      - intake:/intake:ro
+      - trivy_cache:/trivy-db:ro
+    network_mode: none
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 256
+    mem_limit: 3g
+    cpus: 2
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=2g"]
+    restart: unless-stopped
+
+  trivy-db-refresh:
+    image: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+    profiles: [tool-db-maintenance]
+    command: ["--timeout", "30m", "--cache-dir", "/trivy-cache", "image", "--db-repository", "ghcr.io/aquasecurity/trivy-db:2", "--download-db-only"]
+    volumes: [trivy_cache:/trivy-cache]
+    network_mode: bridge
+    restart: "no"
+
+  trivy-java-db-refresh:
+    image: aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+    profiles: [tool-db-maintenance]
+    command: ["--timeout", "30m", "--cache-dir", "/trivy-cache", "image", "--java-db-repository", "ghcr.io/aquasecurity/trivy-java-db:1", "--download-java-db-only"]
+    volumes: [trivy_cache:/trivy-cache]
+    network_mode: bridge
+    restart: "no"
 
   postgres:
     image: postgres:16.6-alpine
@@ -133,3 +196,6 @@ volumes:
   postgres_data:
   redis_data:
   artifacts:
+  intake:
+  scan_work:
+  trivy_cache:

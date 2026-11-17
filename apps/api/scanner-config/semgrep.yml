@@ -1,0 +1,41 @@
+rules:
+  - id: sapphire.javascript.eval
+    languages: [javascript, typescript]
+    message: Avoid evaluating dynamically supplied JavaScript.
+    severity: ERROR
+    pattern: eval($VALUE)
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: "CWE-95"
+      technology: [javascript]
+  - id: sapphire.python.eval
+    languages: [python]
+    message: Avoid evaluating dynamically supplied Python.
+    severity: ERROR
+    pattern: eval($VALUE)
+    metadata:
+      category: security
+      confidence: HIGH
+      cwe: "CWE-95"
+      technology: [python]
+  - id: sapphire.python.pickle-load
+    languages: [python]
+    message: Deserializing untrusted pickle data can execute code.
+    severity: WARNING
+    pattern: pickle.loads($VALUE)
+    metadata:
+      category: security
+      confidence: MEDIUM
+      cwe: "CWE-502"
+      technology: [python]
+  - id: sapphire.javascript.child-process-exec
+    languages: [javascript, typescript]
+    message: Review shell command construction and ensure arguments are not attacker controlled.
+    severity: WARNING
+    pattern: child_process.exec($COMMAND, ...)
+    metadata:
+      category: security
+      confidence: MEDIUM
+      cwe: "CWE-78"
+      technology: [nodejs]
