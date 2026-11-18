@@ -19,7 +19,13 @@ export function Dashboard() {
     setSubmissionMessage('');
     try {
       const created = await createAssessment(input);
-      setSubmissionMessage(`Assessment ${created.assessment_id} queued · job ${created.job_id}`);
+      const discovery =
+        created.runtime_discovery?.status === 'authorized'
+          ? 'Exact local discovery profile authorized.'
+          : 'Runtime discovery was not authorized; no discovery requests will be queued.';
+      setSubmissionMessage(
+        `Assessment ${created.assessment_id} queued · job ${created.job_id}. ${discovery}`,
+      );
     } catch (error) {
       setSubmissionError(error instanceof Error ? error.message : 'Request failed');
     }

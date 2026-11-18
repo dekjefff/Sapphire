@@ -1,0 +1,25 @@
+{
+  "milestone": 3,
+  "package": "WP8",
+  "closure": "complete",
+  "automated_tests": { "total": 68, "passed": 68, "failed": 0, "skipped": 0 },
+  "live_assessment_id": "b9f7bc25-f9d3-4f89-8a4c-4cf0cc35917c",
+  "live_cancellation_assessment_id": "ec3ebd85-8ba9-45f5-90de-60762e23042c",
+  "vulnerable_source": "test/fixtures/wp8/vulnerable-source/routes.js",
+  "isolated_target": "test/fixtures/wp8/compose-target.mjs",
+  "network_boundary": "Exact Compose origin and pinned IP; GET only through the authenticated discovery gateway",
+  "evidence": [
+    { "criterion": "safe ZIP intake and generated/link/archive boundary handling", "status": "verified" },
+    { "criterion": "Windows junction is skipped without target traversal", "status": "verified by a real junction fixture" },
+    { "criterion": "exact origin, path, expiry, policy hash and strict task contracts", "status": "verified" },
+    { "criterion": "pinned passive HTTPX/Katana adapters and bounded parsers", "status": "verified" },
+    { "criterion": "proxy authentication, DNS/IP rebinding defense, header stripping, redirect denial and budgets", "status": "verified" },
+    { "criterion": "rate scheduling, cancellation, concurrency, URL, byte and wall-clock enforcement", "status": "verified" },
+    { "criterion": "runtime endpoint persistence, artifact/raw-pointer provenance and coverage matching", "status": "verified" },
+    { "criterion": "API pagination/states and dashboard rendering contracts", "status": "verified" },
+    { "criterion": "real inert eval vulnerability detected by Semgrep", "status": "verified; CWE-95 high finding at routes.js:7" },
+    { "criterion": "live isolated end-to-end discovery", "status": "completed/complete for HTTPX and Katana; 4 endpoints and 4 matches" },
+    { "criterion": "live cancellation stops active discovery", "status": "cancelled/incomplete; target received zero requests after cancellation and audit sequence is complete" },
+    { "criterion": "zero out-of-scope or state-changing target requests", "status": "verified by target ledger; four GET requests only and no gateway denial event" }
+  ]
+}

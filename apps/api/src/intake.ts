@@ -3,15 +3,59 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import yauzl from "yauzl";
 import ts from "typescript-parser";
+import { IntakeError, type IntakeReasonCode } from "./intake-reasons.js";
 
-export const LIMITS = { archiveBytes: 100 * 1024 * 1024, extractedBytes: 250 * 1024 * 1024, files: 20_000, fileBytes: 10 * 1024 * 1024, depth: 32 };
+export const LIMITS = { archiveBytes: 100 * 1024 * 1024, extractedBytes: 250 * 1024 * 1024, files: 20_000, fileBytes: 10 * 1024 * 1024, depth: 32, archiveEntries: 100_000, skippedReportEntries: 50, skippedPathChars: 200 };
 export type IntakeSource = { type: "local_path"; path: string } | { type: "zip"; path: string };
 export type Technology = { name: string; category: string; confidence: number; evidence: string[]; reason: string };
 export type DiscoveredRoute = { method: string; path: string; file: string; line: number | null; confidence: number };
 export type Finding = { severity: "warning" | "error"; code: string; message: string };
 export type IntakeResult = { sourceType: string; canonicalLocation: string; identityType: "git_commit" | "content_sha256"; identity: string; fileCount: number; totalBytes: number; scanRoot: string; temporaryRoot: string | null; technologies: Technology[]; routes: DiscoveredRoute[]; findings: Finding[] };
 
-const excludedDirectoryNames = new Set(["node_modules", ".next", "dist", "build", "vendor", "coverage", "out", ".turbo", ".cache", "target", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".gradle"]);
+const excludedDirectoryNames = new Set([".git", "node_modules", ".next", "dist", "build", "vendor", "coverage", "out", ".turbo", ".cache", "target", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".gradle"]);
+type SkippedEntryReport = { total: number; entries: string[]; truncated: boolean; linkTotal: number; linkEntries: string[]; linkTruncated: boolean; categories: Map<string, number> };
+
+function fail(reasonCode: IntakeReasonCode): never { throw new IntakeError(reasonCode); }
+
+function safeRelativePath(path: string): string {
+  const cleaned = path.replace(/[\u0000-\u001f\u007f]/g, "?").replace(/\\/g, "/");
+  return cleaned.length > LIMITS.skippedPathChars ? `${cleaned.slice(0, LIMITS.skippedPathChars - 1)}…` : cleaned;
+}
+
+function addSkipped(report: SkippedEntryReport, path: string, category: string, isLinkEntry = false): void {
+  report.total += 1;
+  report.categories.set(category, (report.categories.get(category) ?? 0) + 1);
+  if (isLinkEntry) {
+    report.linkTotal += 1;
+    if (report.linkEntries.length < LIMITS.skippedReportEntries) report.linkEntries.push(safeRelativePath(path));
+    else report.linkTruncated = true;
+  } else if (report.entries.length < LIMITS.skippedReportEntries) report.entries.push(safeRelativePath(path));
+  else {
+    report.truncated = true;
+  }
+}
+
+function skippedFindings(report: SkippedEntryReport): Finding[] {
+  const findings: Finding[] = [];
+  const generatedTotal = report.total - report.linkTotal;
+  if (generatedTotal) {
+    const names = report.entries.length ? ` Entries: ${report.entries.join(", ")}.` : "";
+    const omitted = report.truncated ? " Additional entries were omitted from this bounded report." : "";
+    const categories = [...report.categories.entries()].filter(([category]) => category !== "links").sort(([a], [b]) => a.localeCompare(b)).map(([category, count]) => `${category}: ${count}`).join(", ");
+    findings.push({ severity: "warning", code: "generated_content_skipped", message: `Inventory is incomplete: ${generatedTotal} generated, dependency, or .git entries were skipped by intake-exclusions-v2 (${categories}).${names}${omitted}` });
+  }
+  if (report.linkTotal) {
+    const names = report.linkEntries.length ? ` Entries: ${report.linkEntries.join(", ")}.` : "";
+    const omitted = report.linkTruncated ? " Additional entries were omitted from this bounded report." : "";
+    findings.push({ severity: "warning", code: "intake_link_skipped", message: `Inventory is incomplete: ${report.linkTotal} filesystem or archive links were skipped safely.${names}${omitted}` });
+  }
+  return findings;
+}
+
+function isLink(info: Awaited<ReturnType<typeof lstat>>): boolean {
+  const attributes = (info as typeof info & { attributes?: number }).attributes ?? 0;
+  return info.isSymbolicLink() || (attributes & 0x400) !== 0;
+}
 
 function inside(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
@@ -23,40 +67,42 @@ function workspaceRoots(): string[] {
 }
 
 export async function validateLocalPath(input: string): Promise<string> {
-  if (!isAbsolute(input)) throw new Error("Repository path must be absolute and inside a configured workspace root");
-  const target = await realpath(input);
-  const info = await stat(target);
-  if (!info.isDirectory()) throw new Error("Repository path must be a directory");
+  if (!isAbsolute(input)) fail("intake_unsafe_entry");
+  let target: string;
+  try {
+    const inputInfo = await lstat(input);
+    if (isLink(inputInfo)) fail("intake_unsafe_entry");
+    target = await realpath(input);
+  } catch (error) { if (error instanceof IntakeError) throw error; fail("intake_unsafe_entry"); }
+  let info;
+  try { info = await stat(target!); } catch { fail("intake_unsafe_entry"); }
+  if (!info!.isDirectory()) fail("intake_unsafe_entry");
   const roots = await Promise.all(workspaceRoots().map((root) => realpath(root).catch(() => "")));
-  if (!roots.some((root) => root && inside(root, target))) throw new Error("Repository path is outside configured workspace roots");
-  return target;
+  if (!roots.some((root) => root && inside(root, target!))) fail("intake_unsafe_entry");
+  return target!;
 }
 
-async function inventory(root: string): Promise<{ files: string[]; size: number; hash: string; commit: string | null; skipped: Map<string, number> }> {
+async function inventory(root: string, skipped: SkippedEntryReport): Promise<{ files: string[]; size: number; hash: string; commit: string | null }> {
   const files: string[] = [];
-  const skipped = new Map<string, number>();
   let size = 0;
   const hash = createHash("sha256");
   async function walk(dir: string, depth: number): Promise<void> {
-    if (depth > LIMITS.depth) throw new Error("Repository exceeds the maximum directory depth");
+    if (depth > LIMITS.depth) fail("intake_limit_exceeded");
     const entries = await readdir(dir, { withFileTypes: true });
     entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
     for (const entry of entries) {
-      if (dir === root && entry.name === ".git") continue;
-      if (entry.isDirectory() && excludedDirectoryNames.has(entry.name)) {
-        skipped.set(entry.name, (skipped.get(entry.name) ?? 0) + 1);
-        continue;
-      }
       const full = join(dir, entry.name);
       const info = await lstat(full);
-      if (info.isSymbolicLink()) throw new Error(`Symbolic links are not accepted: ${relative(root, full)}`);
+      const relPath = relative(root, full).split(sep).join("/");
+      if (isLink(info)) { addSkipped(skipped, relPath, "links", true); continue; }
+      if (info.isDirectory() && excludedDirectoryNames.has(entry.name)) { addSkipped(skipped, relPath, entry.name); continue; }
       if (info.isDirectory()) { await walk(full, depth + 1); continue; }
-      if (!info.isFile()) throw new Error(`Special files are not accepted: ${relative(root, full)}`);
-      if (info.size > LIMITS.fileBytes) throw new Error(`File exceeds the ${LIMITS.fileBytes} byte per-file limit: ${relative(root, full)}`);
+      if (!info.isFile()) fail("intake_unsafe_entry");
+      if (info.size > LIMITS.fileBytes) fail("intake_limit_exceeded");
       size += info.size;
-      if (size > LIMITS.extractedBytes) throw new Error("Repository exceeds the total source size limit");
-      files.push(relative(root, full).split(sep).join("/"));
-      if (files.length > LIMITS.files) throw new Error("Repository exceeds the maximum file count");
+      if (size > LIMITS.extractedBytes) fail("intake_limit_exceeded");
+      files.push(relPath);
+      if (files.length > LIMITS.files) fail("intake_limit_exceeded");
     }
   }
   await walk(root, 0);
@@ -64,20 +110,26 @@ async function inventory(root: string): Promise<{ files: string[]; size: number;
     const bytes = await readFile(join(root, ...path.split("/")));
     hash.update(path).update("\0").update(String(bytes.length)).update("\0").update(bytes).update("\0");
   }
-  return { files, size, hash: hash.digest("hex"), commit: await gitHead(root), skipped };
+  return { files, size, hash: hash.digest("hex"), commit: await gitHead(root) };
 }
 
 async function gitHead(root: string): Promise<string | null> {
   const git = join(root, ".git");
   try {
-    if (!(await lstat(git)).isDirectory()) return null;
-    const head = (await readFile(join(git, "HEAD"), "utf8")).trim();
+    const gitInfo = await lstat(git);
+    if (isLink(gitInfo) || !gitInfo.isDirectory()) return null;
+    const headPath = join(git, "HEAD");
+    const headInfo = await lstat(headPath);
+    if (isLink(headInfo) || !headInfo.isFile()) return null;
+    const head = (await readFile(headPath, "utf8")).trim();
     const direct = /^[0-9a-f]{40,64}$/i.test(head) ? head.toLowerCase() : null;
     if (direct) return direct;
     const match = /^ref: (refs\/[\w./-]+)$/.exec(head);
     if (!match) return null;
     const refPath = resolve(git, match[1]);
     if (!inside(git, refPath)) return null;
+    const refInfo = await lstat(refPath).catch(() => null);
+    if (refInfo && (isLink(refInfo) || !refInfo.isFile())) return null;
     const value = (await readFile(refPath, "utf8").catch(() => "")).trim();
     if (/^[0-9a-f]{40,64}$/i.test(value)) return value.toLowerCase();
     const packed = await readFile(join(git, "packed-refs"), "utf8").catch(() => "");
@@ -88,42 +140,67 @@ async function gitHead(root: string): Promise<string | null> {
 }
 
 function zipOpen(path: string): Promise<yauzl.ZipFile> {
-  return new Promise((resolveZip, reject) => yauzl.open(path, { lazyEntries: true, autoClose: false, decodeStrings: true, validateEntrySizes: true }, (error, zip) => error || !zip ? reject(error ?? new Error("Invalid ZIP archive")) : resolveZip(zip)));
+  return new Promise((resolveZip, reject) => yauzl.open(path, { lazyEntries: true, autoClose: false, decodeStrings: true, validateEntrySizes: true }, (error, zip) => {
+    if (!error && zip) { resolveZip(zip); return; }
+    const reasonCode = error instanceof Error && /^invalid relative path:/i.test(error.message) ? "intake_unsafe_entry" : "intake_archive_malformed";
+    reject(new IntakeError(reasonCode));
+  }));
 }
 
-async function extractZip(archive: string, dest: string): Promise<void> {
-  const archiveInfo = await stat(archive);
-  if (archiveInfo.size > LIMITS.archiveBytes) throw new Error("ZIP exceeds the 100 MB upload limit");
+async function extractZip(archive: string, dest: string, skipped: SkippedEntryReport): Promise<void> {
+  let archiveInfo;
+  try { archiveInfo = await stat(archive); } catch { fail("intake_archive_malformed"); }
+  if (archiveInfo!.size > LIMITS.archiveBytes) fail("intake_limit_exceeded");
   const zip = await zipOpen(archive);
   let files = 0;
   let total = 0;
+  let archiveEntries = 0;
+  const seenPaths = new Set<string>();
   await new Promise<void>((resolveExtract, reject) => {
-    const fail = (error: Error) => { zip.close(); reject(error); };
-    zip.on("error", fail);
+    let settled = false;
+    const rejectSafe = (reasonCode: IntakeReasonCode) => { if (settled) return; settled = true; zip.close(); reject(new IntakeError(reasonCode)); };
+    zip.on("error", (error) => rejectSafe(error instanceof Error && /^invalid relative path:/i.test(error.message) ? "intake_unsafe_entry" : "intake_archive_malformed"));
     zip.on("entry", (entry) => {
       const raw = entry.fileName;
       const normalized = raw.replace(/\\/g, "/");
       const mode = (entry.externalFileAttributes >>> 16) & 0xffff;
       const fileType = mode & 0o170000;
-      const parts = normalized.split("/").filter((part: string) => part && part !== ".");
-      if (!normalized || normalized.startsWith("/") || /^[a-z]:/i.test(normalized) || parts.includes("..") || parts.length > LIMITS.depth || fileType === 0o120000 || (fileType !== 0 && fileType !== 0o100000 && fileType !== 0o040000)) return fail(new Error(`Unsafe ZIP entry rejected: ${raw.slice(0, 160)}`));
-      const isDirectory = normalized.endsWith("/") || fileType === 0o040000;
+      const dosAttributes = entry.externalFileAttributes & 0xffff;
+      const rawParts = normalized.split("/");
+      const isDirectory = normalized.endsWith("/") || fileType === 0o040000 || (dosAttributes & 0x10) !== 0;
+      if (isDirectory && rawParts.at(-1) === "") rawParts.pop();
+      const parts: string[] = rawParts;
+      archiveEntries += 1;
+      if (archiveEntries > LIMITS.archiveEntries) return rejectSafe("intake_limit_exceeded");
+      if (!raw || raw.length > 4096 || /[\u0000-\u001f\u007f]/.test(raw) || normalized.startsWith("/") || /^[a-z]:/i.test(normalized) || parts.some((part: string) => !part || part === "." || part === "..") || parts.length > LIMITS.depth) return rejectSafe("intake_unsafe_entry");
+      if (!Number.isSafeInteger(entry.uncompressedSize) || entry.uncompressedSize < 0 || !Number.isSafeInteger(entry.compressedSize) || entry.compressedSize < 0) return rejectSafe("intake_archive_malformed");
+      const isSymlink = fileType === 0o120000 || (dosAttributes & 0x400) !== 0;
+      if (!isSymlink && fileType !== 0 && fileType !== 0o100000 && fileType !== 0o040000) return rejectSafe("intake_unsafe_entry");
+      const normalizedRel = parts.join("/");
+      const excludedPart = parts.find((part) => excludedDirectoryNames.has(part));
+      if (isSymlink || excludedPart) {
+        addSkipped(skipped, normalizedRel, isSymlink ? "links" : excludedPart!, isSymlink);
+        zip.readEntry();
+        return;
+      }
       const out = resolve(dest, ...parts);
-      if (!inside(dest, out)) return fail(new Error("ZIP entry escapes extraction directory"));
-      if (isDirectory) { mkdir(out, { recursive: true }).then(() => zip.readEntry(), fail); return; }
+      if (!inside(dest, out)) return rejectSafe("intake_unsafe_entry");
+      if (seenPaths.has(normalizedRel)) return rejectSafe("intake_unsafe_entry");
+      seenPaths.add(normalizedRel);
+      if (isDirectory) { mkdir(out, { recursive: true }).then(() => zip.readEntry(), () => rejectSafe("intake_archive_malformed")); return; }
       files += 1; total += entry.uncompressedSize;
-      if (files > LIMITS.files || entry.uncompressedSize > LIMITS.fileBytes || total > LIMITS.extractedBytes) return fail(new Error("ZIP exceeds file count, per-file, or expanded size limit"));
+      if (files > LIMITS.files || entry.uncompressedSize > LIMITS.fileBytes || total > LIMITS.extractedBytes) return rejectSafe("intake_limit_exceeded");
       mkdir(dirname(out), { recursive: true }).then(() => {
         zip.openReadStream(entry, (error, stream) => {
-          if (error || !stream) return fail(error ?? new Error("Could not read ZIP entry"));
+          if (error || !stream) return rejectSafe("intake_archive_malformed");
           const chunks: Buffer[] = []; let seen = 0;
-          stream.on("data", (chunk: Buffer) => { seen += chunk.length; if (seen > LIMITS.fileBytes || seen > entry.uncompressedSize) stream.destroy(new Error("ZIP entry exceeded declared size")); else chunks.push(chunk); });
-          stream.on("error", fail);
-          stream.on("end", () => { if (seen !== entry.uncompressedSize) return fail(new Error("ZIP entry size mismatch")); writeFile(out, Buffer.concat(chunks), { flag: "wx", mode: 0o444 }).then(() => zip.readEntry(), fail); });
+          stream.on("data", (chunk: Buffer) => { seen += chunk.length; if (seen > LIMITS.fileBytes || seen > entry.uncompressedSize) { stream.destroy(); rejectSafe("intake_archive_malformed"); } else chunks.push(chunk); });
+          stream.on("error", () => rejectSafe("intake_archive_malformed"));
+          stream.on("end", () => { if (settled) return; if (seen !== entry.uncompressedSize) return rejectSafe("intake_archive_malformed"); writeFile(out, Buffer.concat(chunks), { flag: "wx", mode: 0o444 }).then(() => zip.readEntry(), () => rejectSafe("intake_unsafe_entry")); });
         });
-      }, fail);
+      }, () => rejectSafe("intake_archive_malformed"));
     });
-    zip.on("end", () => { zip.close(); resolveExtract(); });
+    zip.on("end", () => { if (settled) return; settled = true; zip.close(); resolveExtract(); });
     zip.readEntry();
   });
 }
@@ -495,7 +572,7 @@ async function extractExpressRoutes(root: string, files: string[], findings: Fin
   return [...new Map(routes.map((route) => [`${route.method}:${route.path}:${route.file}:${route.line}`, route])).values()];
 }
 
-async function detect(root: string, files: string[], skipped: Map<string, number>): Promise<{ technologies: Technology[]; routes: DiscoveredRoute[]; findings: Finding[] }> {
+async function detect(root: string, files: string[], skipped: SkippedEntryReport): Promise<{ technologies: Technology[]; routes: DiscoveredRoute[]; findings: Finding[] }> {
   const findings: Finding[] = [];
   const evidence = new Map<string, Set<string>>();
   const add = (name: string, category: string, path: string, reason: string, confidence = 0.95) => {
@@ -552,10 +629,7 @@ async function detect(root: string, files: string[], skipped: Map<string, number
   const unique = [...new Map(routes.map((route) => [`${route.method}:${route.path}:${route.file}:${route.line}`, route])).values()];
   if (!technologies.length) findings.push({ severity: "warning", code: "stack_unknown", message: "No supported technology manifests or source extensions were detected" });
   if (!unique.length) findings.push({ severity: "warning", code: "routes_none", message: "No supported routes were found by the conservative source parser" });
-  if (skipped.size) {
-    const summary = [...skipped.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, count]) => `${name} (${count})`).join(", ");
-    findings.push({ severity: "warning", code: "generated_content_skipped", message: `Skipped known generated/dependency directories; stack and route parsing is incomplete there: ${summary}` });
-  }
+  findings.push(...skippedFindings(skipped));
   findings.push({ severity: "warning", code: "untrusted_source", message: "Repository files were inspected as untrusted data; no package scripts or repository code were executed" });
   return { technologies, routes: unique, findings };
 }
@@ -563,20 +637,24 @@ async function detect(root: string, files: string[], skipped: Map<string, number
 export async function inspectSource(source: IntakeSource, jobId: string): Promise<IntakeResult> {
   const intakeDir = process.env.INTAKE_DIR ?? "/intake";
   let root: string; let temporaryRoot: string | null = null;
+  const skipped: SkippedEntryReport = { total: 0, entries: [], truncated: false, linkTotal: 0, linkEntries: [], linkTruncated: false, categories: new Map() };
   if (source.type === "local_path") root = await validateLocalPath(source.path);
   else {
     const archive = resolve(intakeDir, source.path);
-    if (!inside(await realpath(intakeDir), await realpath(archive))) throw new Error("ZIP path is outside the intake directory");
+    let intakeRealPath: string; let archiveRealPath: string;
+    try { [intakeRealPath, archiveRealPath] = await Promise.all([realpath(intakeDir), realpath(archive)]); }
+    catch { fail("intake_archive_malformed"); }
+    if (!inside(intakeRealPath!, archiveRealPath!)) fail("intake_unsafe_entry");
     temporaryRoot = await mkdtemp(join(intakeDir, `work-${jobId}-`));
     root = temporaryRoot;
   }
   try {
     if (temporaryRoot) {
-      await extractZip(resolve(intakeDir, source.path), root);
+      await extractZip(resolve(intakeDir, source.path), root, skipped);
       const entries = await readdir(root, { withFileTypes: true });
       if (entries.length === 1 && entries[0].isDirectory()) root = join(root, entries[0].name);
     }
-    const { files, size, hash, commit, skipped } = await inventory(root);
+    const { files, size, hash, commit } = await inventory(root, skipped);
     const detected = await detect(root, files, skipped);
     return { sourceType: source.type, canonicalLocation: source.type === "local_path" ? root : basename(source.path), identityType: commit ? "git_commit" : "content_sha256", identity: commit ?? hash, fileCount: files.length, totalBytes: size, scanRoot: root, temporaryRoot, ...detected };
   } catch (error) {
@@ -590,8 +668,8 @@ export async function stageUpload(stream: NodeJS.ReadableStream, jobId: string):
   await mkdir(intakeDir, { recursive: true });
   const dest = join(intakeDir, `${jobId}.zip`);
   let size = 0; const chunks: Buffer[] = [];
-  for await (const chunk of stream) { const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += buffer.length; if (size > LIMITS.archiveBytes) throw new Error("ZIP exceeds the 100 MB upload limit"); chunks.push(buffer); }
-  if (!size) throw new Error("ZIP upload is empty");
+  for await (const chunk of stream) { const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk); size += buffer.length; if (size > LIMITS.archiveBytes) fail("intake_limit_exceeded"); chunks.push(buffer); }
+  if (!size) fail("intake_archive_malformed");
   await writeFile(dest, Buffer.concat(chunks), { flag: "wx", mode: 0o400 });
   return dest;
 }

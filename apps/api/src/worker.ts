@@ -6,8 +6,16 @@ import type { PoolClient } from "pg";
 import { createClient } from "redis";
 import { pool } from "./db.js";
 import { inspectSource, type IntakeResult } from "./intake.js";
+import { intakeReasonCode, intakeReasonMessage, isIntakeReasonCode } from "./intake-reasons.js";
 import { parseSemgrepJson, parseTrivyJson, type NormalizedFinding } from "./normalize.js";
 import { isUuid, QUEUE_NAME, type JobMessage } from "./types.js";
+import { DEFAULT_DISCOVERY_BUDGET, DiscoveryScopeSchema, type DiscoveryResult, type DiscoveryScope } from "./discovery-contracts.js";
+import { verifyDiscoveryScope, assertUrlInDiscoveryScope } from "./discovery-scope-policy.js";
+import { normalizeDiscoveryJsonl } from "./discovery/normalizer.js";
+import { refreshRouteMatches } from "./discovery/matching.js";
+import { DISCOVERY_ADAPTER_VERSION, DISCOVERY_TOOL_VERSIONS, discoveryArtifactLeaf, readGatewayEvents, sha256, verifyDiscoveryArtifact, waitForDiscoveryResult, writeDiscoveryInputs } from "./discovery/coordinator.js";
+import { hasCoverageGaps } from "./discovery/coverage.js";
+import { isReasonCode } from "./reason-codes.js";
 
 const redis = createClient({ url: process.env.REDIS_URL ?? "redis://redis:6379/0" });
 redis.on("error", (error) => console.error("Redis worker error:", error));
@@ -197,11 +205,139 @@ async function recordIntakeFailure(assessmentId: string, jobId: string, reason: 
     await client.query("UPDATE tool_runs SET status='failed',finished_at=now(),error=$2,coverage_status='incomplete' WHERE id=$1", [jobId, reason]);
     await client.query("UPDATE assessments SET status='failed',coverage_status='incomplete',updated_at=now() WHERE id=$1", [assessmentId]);
     await client.query("UPDATE projects SET intake_status='failed' WHERE id=(SELECT project_id FROM assessments WHERE id=$1)", [assessmentId]);
-    await client.query("INSERT INTO intake_findings (assessment_id,severity,code,message) VALUES ($1,'error','intake_failed',$2)", [assessmentId, reason]);
+    const message = isIntakeReasonCode(reason) ? intakeReasonMessage(reason) : "Source intake could not be completed.";
+    await client.query("INSERT INTO intake_findings (assessment_id,severity,code,message) VALUES ($1,'error',$2,$3)", [assessmentId, isIntakeReasonCode(reason) ? reason : "intake_failed", message]);
     await client.query("INSERT INTO audit_events (assessment_id,tool_run_id,actor,event_type,details) VALUES ($1,$2,'worker','intake.failed',$3)", [assessmentId, jobId, { reason_code: reason }]);
     await client.query("COMMIT");
   } catch (error) { await client.query("ROLLBACK"); throw error; }
   finally { client.release(); }
+}
+
+function jsonValue<T>(value: unknown): T {
+  return (typeof value === "string" ? JSON.parse(value) : value) as T;
+}
+
+async function loadApprovedDiscoveryScope(assessmentId: string): Promise<DiscoveryScope | null> {
+  const result = await pool.query("SELECT id,assessment_id,scheme,host,port,path_mode,path_prefixes,allowed_methods,pinned_ips,policy_revision,policy_sha256,authorization_actor,authorized_at,expires_at FROM discovery_scopes WHERE assessment_id=$1 ORDER BY created_at DESC LIMIT 1", [assessmentId]);
+  if (!result.rowCount) return null;
+  const row = result.rows[0]!;
+  const scope = DiscoveryScopeSchema.parse({
+    scope_id: String(row.id), assessment_id: String(row.assessment_id), scheme: row.scheme, host: row.host,
+    port: Number(row.port), path_mode: row.path_mode, path_prefixes: jsonValue(row.path_prefixes),
+    allowed_methods: jsonValue(row.allowed_methods), pinned_ips: jsonValue(row.pinned_ips),
+    policy_revision: row.policy_revision, policy_sha256: row.policy_sha256,
+    authorization_actor: row.authorization_actor,
+    authorized_at: new Date(row.authorized_at).toISOString(), expires_at: new Date(row.expires_at).toISOString(),
+  });
+  if (!verifyDiscoveryScope(scope)) throw new Error("scope_invalid");
+  return scope;
+}
+
+function discoverySeed(scope: DiscoveryScope): string {
+  const origin = `${scope.scheme}://${scope.host}:${scope.port}`;
+  return `${origin}${scope.path_mode === "prefix" ? scope.path_prefixes[0] : "/"}`;
+}
+
+async function failDiscoveryRun(assessmentId: string, runId: string, tool: "httpx" | "katana", reason: string): Promise<void> {
+  const safeReason = isReasonCode(reason) ? reason : "tool_failed";
+  await pool.query("UPDATE tool_runs SET status='failed',finished_at=now(),error=$2,failure_reason_code=$2,coverage_status='incomplete' WHERE id=$1", [runId, safeReason]);
+  await audit(assessmentId, runId, "worker", "discovery.failed", { tool, reason_code: safeReason });
+}
+
+async function runDiscoveryTool(assessmentId: string, scope: DiscoveryScope, tool: "httpx" | "katana", runId: string): Promise<{ status: "completed" | "failed" | "cancelled"; coverage: "complete" | "incomplete"; failure: string | null }> {
+  const inserted = await pool.query("INSERT INTO tool_runs (id,assessment_id,tool_definition_id,status,discovery_scope_id,scope_policy_sha256,coverage_status) VALUES ($1,$2,$3,'queued',$4,$5,'pending')", [runId, assessmentId, tool, scope.scope_id, scope.policy_sha256]);
+  void inserted;
+  await audit(assessmentId, runId, "worker", "discovery.queued", { tool, scope_policy_sha256: scope.policy_sha256 });
+  const claimed = await pool.query("UPDATE tool_runs SET status='running',started_at=now() WHERE id=$1 AND status='queued' AND cancel_requested=false RETURNING id", [runId]);
+  if (!claimed.rowCount) {
+    await pool.query("UPDATE tool_runs SET status='cancelled',finished_at=now(),coverage_status='incomplete',failure_reason_code='cancelled',error='cancelled' WHERE id=$1 AND status='queued' AND cancel_requested=true", [runId]);
+    await audit(assessmentId, runId, "worker", "discovery.cancelled", { tool, phase: "before_start", reason_code: "cancelled" });
+    return { status: "cancelled", coverage: "incomplete", failure: "cancelled" };
+  }
+  await audit(assessmentId, runId, "worker", "discovery.started", { tool, tool_version: DISCOVERY_TOOL_VERSIONS[tool], adapter_version: DISCOVERY_ADAPTER_VERSION });
+  const budget = DEFAULT_DISCOVERY_BUDGET;
+  const task = {
+    schema_version: 1 as const, assessment_id: assessmentId, tool_run_id: runId, scope_id: scope.scope_id,
+    scope_policy_sha256: scope.policy_sha256, tool, seed_url: discoverySeed(scope),
+    budget_profile_id: budget.profile_id, cancellation_ref: runId,
+  };
+  try {
+    assertUrlInDiscoveryScope(task.seed_url, scope);
+    const workRoot = process.env.DISCOVERY_WORK_DIR ?? "/discovery-work";
+    await writeDiscoveryInputs(workRoot, task, scope, budget);
+    const result = await waitForDiscoveryResult(workRoot, task, budget, () => pollCancellation(runId));
+    const persisted = await persistDiscoveryResult(assessmentId, scope, result, task.tool_run_id);
+    await Promise.all([
+      rm(join(workRoot, "requests", `${runId}.json`), { force: true }),
+      rm(join(workRoot, "cancel", runId), { force: true }),
+      rm(join(workRoot, "results", runId), { recursive: true, force: true }),
+    ]);
+    return persisted;
+  } catch (error) {
+    const reason = error instanceof Error && isReasonCode(error.message) ? error.message : error instanceof Error && error.message === "timeout" ? "timeout" : "tool_failed";
+    await failDiscoveryRun(assessmentId, runId, tool, reason);
+    return { status: "failed", coverage: "incomplete", failure: reason };
+  }
+}
+
+async function persistDiscoveryResult(assessmentId: string, scope: DiscoveryScope, result: DiscoveryResult, runId: string): Promise<{ status: "completed" | "failed" | "cancelled"; coverage: "complete" | "incomplete"; failure: string | null }> {
+  const root = process.env.DISCOVERY_WORK_DIR ?? "/discovery-work";
+  let gateway = { reason: null as string | null, denials: 0 };
+  let gatewayEventsInvalid = false;
+  try { gateway = await readGatewayEvents(root, runId); }
+  catch { gatewayEventsInvalid = true; }
+  const cancelRequested = await pollCancellation(runId);
+  let failure = gatewayEventsInvalid ? "malformed_tool_output" : result.failure_reason_code ?? gateway.reason;
+  let status: "completed" | "failed" | "cancelled" = result.status === "cancelled" || gateway.reason === "cancelled" || cancelRequested ? "cancelled" : result.status === "failed" || gatewayEventsInvalid ? "failed" : "completed";
+  if (status === "cancelled") failure = "cancelled";
+  let coverage: "complete" | "incomplete" = result.coverage_status === "complete" && !failure && status === "completed" ? "complete" : "incomplete";
+  if (status === "failed") failure ??= "tool_failed";
+  if (status === "completed" && coverage === "incomplete") failure ??= "scope_limited";
+  const descriptor = result.artifacts[0];
+  if (result.artifacts.length > 1) throw new Error("artifact_metadata_invalid");
+  let bytes: Buffer | null = null;
+  let normalized: ReturnType<typeof normalizeDiscoveryJsonl> = [];
+  if (descriptor) {
+    bytes = await verifyDiscoveryArtifact(root, result, descriptor);
+    try {
+      normalized = normalizeDiscoveryJsonl(bytes.toString("utf8"), {
+        tool: result.tool, assessmentId, toolRunId: runId, artifactId: descriptor.artifact_id,
+        scope, toolVersion: result.tool_version, configSha256: result.config_sha256, observedAt: result.finished_at ?? new Date().toISOString(),
+      });
+    } catch { failure ??= "malformed_tool_output"; coverage = "incomplete"; }
+  }
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    let artifactId: string | null = null;
+    if (descriptor && bytes) {
+      artifactId = descriptor.artifact_id;
+      const relPath = `discovery/${assessmentId}/${runId}/${discoveryArtifactLeaf(result.tool)}`;
+      const output = resolve(artifactDir, relPath);
+      if (!inside(resolve(artifactDir), output)) throw new Error("artifact_path_invalid");
+      await mkdir(resolve(output, ".."), { recursive: true });
+      await writeFile(output, bytes, { mode: 0o600 });
+      const rawPointers = Object.fromEntries(normalized.map((row) => [row.endpoint.endpoint_id, row.raw_pointer]));
+      const metadata = { tool: result.tool, tool_version: result.tool_version, adapter_version: result.adapter_version, config_sha256: result.config_sha256, scope_policy_sha256: scope.policy_sha256, raw_pointers: rawPointers };
+      await client.query("INSERT INTO scan_artifacts (id,assessment_id,tool_run_id,artifact_kind,relative_path,media_type,sha256,byte_size,metadata) VALUES ($1,$2,$3,$4,$5,'application/x-ndjson',$6,$7,$8)", [artifactId, assessmentId, runId, descriptor.artifact_kind, relPath, descriptor.sha256, bytes.length, JSON.stringify(metadata)]);
+      for (const row of normalized) {
+        const e = row.endpoint;
+        await client.query("INSERT INTO runtime_endpoints (id,assessment_id,tool_run_id,artifact_id,scheme,host,port,path,observed_method,status_code,content_type,content_length,title,referrer_path,first_seen_at,last_seen_at,tool_version,config_sha256,scope_policy_sha256) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'GET',$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)", [e.endpoint_id,e.assessment_id,e.tool_run_id,e.artifact_id,e.scheme,e.host,e.port,e.path,e.status_code,e.content_type,e.content_length,e.title,e.referrer_path,e.first_seen_at,e.last_seen_at,e.tool_version,e.config_sha256,e.scope_policy_sha256]);
+      }
+    }
+    await refreshRouteMatches(client, assessmentId);
+    if (status === "completed" && failure) coverage = "incomplete";
+    if (status !== "completed") coverage = "incomplete";
+    const counters = { ...result.counters, endpoints_persisted: normalized.length, policy_denials: Math.max(result.counters.policy_denials, gateway.denials) };
+    await client.query("UPDATE tool_runs SET status=$2,finished_at=$3,error=$4,failure_reason_code=$4,tool_version=$5,adapter_version=$6,config_id='discovery-default-v1',config_sha256=$7,coverage_status=$8,counters=$9,provenance=$10 WHERE id=$1", [runId,status,result.finished_at,failure,result.tool_version,result.adapter_version,result.config_sha256,coverage,JSON.stringify(counters),JSON.stringify({ scope_policy_sha256: scope.policy_sha256, gateway_denials: gateway.denials, artifact_id: artifactId })]);
+    const event = status === "cancelled" ? "discovery.cancelled" : status === "failed" ? "discovery.failed" : coverage === "complete" ? "discovery.completed" : "discovery.incomplete";
+    await client.query("INSERT INTO audit_events (assessment_id,tool_run_id,actor,event_type,details) VALUES ($1,$2,'worker',$3,$4)", [assessmentId,runId,event,{ tool: result.tool, reason_code: failure, endpoint_count: normalized.length, artifact_count: descriptor ? 1 : 0, coverage_status: coverage, counters }]);
+    await client.query("COMMIT");
+    return { status, coverage, failure };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
 }
 
 async function processJob(raw: string): Promise<void> {
@@ -233,7 +369,7 @@ async function processJob(raw: string): Promise<void> {
   let source: IntakeResult;
   try { source = await inspectSource({ type: message.source_type, path: message.source_path }, jobId); }
   catch (error) {
-    const reason = error instanceof Error && /^(Repository exceeds|ZIP exceeds|Unsafe ZIP|Invalid ZIP|ZIP entry|Symbolic links|Special files|File exceeds|Repository path|Target)/.test(error.message) ? "source_rejected" : "intake_failed";
+    const reason = intakeReasonCode(error);
     await recordIntakeFailure(assessmentId, jobId, reason);
     if (message.source_type === "zip") await rm(message.source_path, { force: true }).catch(() => undefined);
     return;
@@ -291,9 +427,35 @@ async function processJob(raw: string): Promise<void> {
       await audit(assessmentId, null, "worker", "assessment.cancelled", { phase: "static_pipeline" });
       return;
     }
-    const complete = semgrep.status === "completed" && trivy.status === "completed";
+    let discovery: { httpx: Awaited<ReturnType<typeof runDiscoveryTool>>; katana?: Awaited<ReturnType<typeof runDiscoveryTool>> } | undefined;
+    const scope = await loadApprovedDiscoveryScope(assessmentId);
+    if (scope) {
+      const httpxRunId = randomUUID();
+      const httpx = await runDiscoveryTool(assessmentId, scope, "httpx", httpxRunId);
+      discovery = { httpx };
+      if (httpx.status === "cancelled") {
+        await pool.query("UPDATE assessments SET status='cancelled',coverage_status='incomplete',updated_at=now() WHERE id=$1", [assessmentId]);
+        await audit(assessmentId, null, "worker", "assessment.cancelled", { phase: "discovery_httpx" });
+        return;
+      }
+      if (httpx.status === "completed") {
+        const katana = await runDiscoveryTool(assessmentId, scope, "katana", randomUUID());
+        discovery.katana = katana;
+        if (katana.status === "cancelled") {
+          await pool.query("UPDATE assessments SET status='cancelled',coverage_status='incomplete',updated_at=now() WHERE id=$1", [assessmentId]);
+          await audit(assessmentId, null, "worker", "assessment.cancelled", { phase: "discovery_katana" });
+          return;
+        }
+      }
+    }
+    const staticComplete = semgrep.status === "completed" && trivy.status === "completed";
+    const discoveryComplete = !discovery || (discovery.httpx.status === "completed" && discovery.httpx.coverage === "complete" && discovery.katana?.status === "completed" && discovery.katana.coverage === "complete");
+    const intakeRows = await pool.query("SELECT code FROM intake_findings WHERE assessment_id=$1", [assessmentId]);
+    const intakeReasonCodes = intakeRows.rows.map((row) => String(row.code));
+    const intakeComplete = !hasCoverageGaps(intakeReasonCodes);
+    const complete = staticComplete && discoveryComplete && intakeComplete;
     await pool.query("UPDATE assessments SET status=$2,coverage_status=$3,updated_at=now() WHERE id=$1", [assessmentId, complete ? "completed" : "failed", complete ? "complete" : "incomplete"]);
-    await audit(assessmentId, null, "worker", complete ? "assessment.completed" : "assessment.incomplete", { semgrep_status: semgrep.status, trivy_status: trivy.status, finding_count: semgrep.findings + trivy.findings, reason_codes: [semgrep.failureCode, trivy.failureCode].filter(Boolean) });
+    await audit(assessmentId, null, "worker", complete ? "assessment.completed" : "assessment.incomplete", { semgrep_status: semgrep.status, trivy_status: trivy.status, discovery_httpx_status: discovery?.httpx.status ?? null, discovery_katana_status: discovery?.katana?.status ?? null, finding_count: semgrep.findings + trivy.findings, reason_codes: [semgrep.failureCode, trivy.failureCode, discovery?.httpx.failure, discovery?.katana?.failure, ...intakeReasonCodes.filter((code) => hasCoverageGaps([code]))].filter(Boolean) });
   } catch (error) {
     const reason = error instanceof Error && /^[a-z0-9_]+$/.test(error.message) ? error.message : "pipeline_failure";
     await pool.query("UPDATE assessments SET status='failed',coverage_status='incomplete',updated_at=now() WHERE id=$1", [assessmentId]);
