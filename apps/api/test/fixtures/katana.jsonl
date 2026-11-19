@@ -1,0 +1,1 @@
+{"timestamp":"2026-11-18T00:00:00Z","url":"http://app.local:3000/api/users?id=FIXTURE_SECRET_QUERY_SHOULD_NOT_PERSIST","request":{"method":"GET","endpoint":"http://app.local:3000/api/users?id=FIXTURE_SECRET_QUERY_SHOULD_NOT_PERSIST","source":"http://app.local:3000/"},"response":{"status_code":200,"content_length":32,"title":"Users"},"content-type":"application/json"}

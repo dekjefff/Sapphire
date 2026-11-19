@@ -1,0 +1,40 @@
+# Immutable linux/amd64 Node base image manifest digest (published tag: 22.14.0-bookworm-slim).
+FROM --platform=linux/amd64 node:22.14.0-bookworm-slim@sha256:745403dc46b5ab4c998502b07a12cbf020cf2c30645427a68ec0718f02d647de AS build
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# Official ProjectDiscovery v1.12.0 release checksums:
+# https://github.com/projectdiscovery/httpx/releases/download/v1.12.0/httpx_1.12.0_checksums.txt
+# httpx_1.12.0_linux_amd64.zip SHA-256: 9d8439e8b6c9aa7d1e2314817a392e00d5178da3af5652f7475f88868f418f76
+# Official ProjectDiscovery v1.8.0 release checksums:
+# https://github.com/projectdiscovery/katana/releases/download/v1.8.0/katana-1.8.0-checksums.txt
+# katana_1.8.0_linux_amd64.zip SHA-256: cb027ae99d0757061b70c07a15c7a80f62c5a535ab52c4a329f80c4b0a7309d2
+FROM --platform=linux/amd64 node:22.14.0-bookworm-slim@sha256:745403dc46b5ab4c998502b07a12cbf020cf2c30645427a68ec0718f02d647de AS runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates unzip \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /discovery-work /app/dist \
+    && chown -R node:node /discovery-work /app
+ADD https://github.com/projectdiscovery/httpx/releases/download/v1.12.0/httpx_1.12.0_linux_amd64.zip /tmp/httpx.zip
+ADD https://github.com/projectdiscovery/katana/releases/download/v1.8.0/katana_1.8.0_linux_amd64.zip /tmp/katana.zip
+RUN echo '9d8439e8b6c9aa7d1e2314817a392e00d5178da3af5652f7475f88868f418f76  /tmp/httpx.zip' | sha256sum -c - \
+    && echo 'cb027ae99d0757061b70c07a15c7a80f62c5a535ab52c4a329f80c4b0a7309d2  /tmp/katana.zip' | sha256sum -c - \
+    && mkdir -p /tmp/httpx /tmp/katana \
+    && unzip -q /tmp/httpx.zip -d /tmp/httpx \
+    && unzip -q /tmp/katana.zip -d /tmp/katana \
+    && install -m 0755 /tmp/httpx/httpx /usr/local/bin/httpx \
+    && install -m 0755 /tmp/katana/katana /usr/local/bin/katana \
+    && rm -rf /tmp/httpx /tmp/katana /tmp/httpx.zip /tmp/katana.zip \
+    && httpx -version 2>&1 | grep -F '1.12.0' \
+    && katana -version 2>&1 | grep -F '1.8.0'
+COPY --from=build --chown=node:node /app/package.json /app/package.json
+COPY --from=build --chown=node:node /app/node_modules /app/node_modules
+COPY --from=build --chown=node:node /app/dist /app/dist
+WORKDIR /app
+ENV NODE_ENV=production DISCOVERY_WORK_DIR=/discovery-work
+USER node
+CMD ["node", "/app/dist/discovery-runner.js"]

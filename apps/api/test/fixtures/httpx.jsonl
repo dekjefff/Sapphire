@@ -1,0 +1,2 @@
+{"url":"http://app.local:3000/health?token=FIXTURE_SECRET_QUERY_SHOULD_NOT_PERSIST","status_code":200,"content_type":"application/json","content_length":14,"title":"Health"}
+{"url":"http://app.local:3000/redirect","status_code":302,"location":"http://outside.example/secret?token=FIXTURE_SECRET_QUERY_SHOULD_NOT_PERSIST"}

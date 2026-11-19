@@ -88,6 +88,25 @@
   font-weight: 400;
 }
 
+.panel label.attestation {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid #dfe6e1;
+  border-radius: 7px;
+  background: #f8fbf9;
+  line-height: 1.5;
+}
+
+.panel label.attestation input {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  margin: 1px 0 0;
+  padding: 0;
+}
+
 .primaryButton {
   display: flex;
   height: 42px;

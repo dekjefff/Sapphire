@@ -32,6 +32,7 @@ services:
       INTAKE_DIR: /intake
       WORKSPACE_ROOTS: /workspace
       CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      DISCOVERY_SCOPE_ALLOWLIST_JSON: '[{"origin":"http://discovery-test-target:3000","pinned_ips":["172.31.80.20"],"policy_revision":"isolated-test-v1","path_mode":"whole_origin","path_prefixes":[]}]'
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
@@ -63,19 +64,26 @@ services:
       INTAKE_DIR: /intake
       WORKSPACE_ROOTS: /workspace
       SCAN_WORK_DIR: /scan-work
+      DISCOVERY_WORK_DIR: /discovery-work
+      DISCOVERY_GATEWAY_EVENTS_DIR: /gateway-events
     volumes:
       - artifacts:/artifacts
       - intake:/intake
       - scan_work:/scan-work
+      - discovery_work:/discovery-work
+      - discovery_gateway_events:/gateway-events:ro
       - "${WORKSPACE_HOST_PATH:-.}:/workspace:ro"
     depends_on:
       api:
         condition: service_healthy
       scanner-runner:
         condition: service_started
+      discovery-runner:
+        condition: service_healthy
       flyway:
         condition: service_completed_successfully
     networks: [sapphire_internal]
+    group_add: ["1000"]
     read_only: true
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
@@ -111,6 +119,59 @@ services:
     mem_limit: 3g
     cpus: 2
     tmpfs: ["/tmp:rw,nosuid,nodev,size=2g"]
+    restart: unless-stopped
+
+  discovery-runner:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.discovery
+    command: ["node", "dist/discovery-runner.js"]
+    environment:
+      DISCOVERY_WORK_DIR: /discovery-work
+      DISCOVERY_GATEWAY_URL: http://discovery-gateway:8080
+    volumes:
+      - discovery_work:/discovery-work
+      - discovery_gateway_events:/gateway-events:ro
+    depends_on:
+      discovery-gateway:
+        condition: service_started
+    networks: [discovery_runner]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 128
+    mem_limit: 1g
+    cpus: 1
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=128m"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "const fs=require('fs');for(const d of ['requests','processing','scopes','budgets','results','cancel','verified-origins']){const s=fs.statSync('/discovery-work/'+d);if((s.mode&0o2070)!==0o2070)process.exit(1)}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  discovery-gateway:
+    build:
+      context: ./apps/api
+    command: ["node", "dist/discovery-gateway.js"]
+    environment:
+      DISCOVERY_GATEWAY_LISTEN: "1"
+      DISCOVERY_WORK_DIR: /discovery-work
+      DISCOVERY_GATEWAY_EVENTS_DIR: /gateway-events
+      DISCOVERY_LOCAL_TARGETS: juiceshop:172.31.80.10:3000,discovery-test-target:172.31.80.20:3000
+    volumes:
+      - discovery_work:/discovery-work:ro
+      - discovery_gateway_events:/gateway-events
+    networks: [discovery_runner, discovery_targets, discovery_egress]
+    group_add: ["1000"]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=32m"]
     restart: unless-stopped
 
   trivy-db-refresh:
@@ -176,7 +237,10 @@ services:
 
   juiceshop:
     image: bkimminich/juice-shop:v17.1.1
-    networks: [sapphire_internal]
+    networks:
+      sapphire_internal: {}
+      discovery_targets:
+        ipv4_address: 172.31.80.10
     healthcheck:
       test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 20s
@@ -185,11 +249,43 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  discovery-test-target:
+    image: node:22.14-alpine@sha256:9bef0ef1e268f60627da9ba7d7605e8831d5b56ad07487d24d1aa386336d1944
+    profiles: [discovery-test]
+    command: ["node", "/fixture/compose-target.mjs"]
+    environment:
+      REQUEST_LOG: /logs/requests.jsonl
+    volumes:
+      - ./test/fixtures/wp8/compose-target.mjs:/fixture/compose-target.mjs:ro
+      - discovery_test_logs:/logs
+    networks:
+      discovery_targets:
+        ipv4_address: 172.31.80.20
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 64
+    mem_limit: 128m
+    cpus: 0.5
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=16m"]
+    restart: "no"
+
 networks:
   sapphire_internal:
     driver: bridge
     internal: true
   sapphire_ingress:
+    driver: bridge
+  discovery_runner:
+    driver: bridge
+    internal: true
+  discovery_targets:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.31.80.0/24
+  discovery_egress:
     driver: bridge
 
 volumes:
@@ -198,4 +294,7 @@ volumes:
   artifacts:
   intake:
   scan_work:
+  discovery_work:
+  discovery_gateway_events:
+  discovery_test_logs:
   trivy_cache:
