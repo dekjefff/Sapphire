@@ -70,3 +70,47 @@ The default PostgreSQL password is for local development only. Set `POSTGRES_PAS
 - OWASP Juice Shop: isolated benchmark, reachable only from the internal Compose network
 
 Jobs include a `cancel_requested` flag and `POST /jobs/{job_id}/cancel` endpoint so future workers can stop cooperatively. This milestone does not include ZAP, Semgrep, Trivy, httpx, Katana, AI orchestration, authentication, source intake, or active testing.
+
+## Run the first pass against npm dependencies
+
+From `apps/api`, install the Sapphire API dependencies with `npm ci` once, then build and run the audit against an authorized local npm package:
+
+```powershell
+npm run build
+npm run --silent audit:dependencies -- . > dependency-audit.json
+```
+
+Replace `.` with the directory that contains the target package's `package.json` and `package-lock.json`. Run the command separately for each package with its own lockfile. The first pass supports standalone npm packages with public registry dependencies and lockfile versions 2 and 3. Workspace, private registry, local, and Git dependencies are outside its coverage. Only choose packages whose dependency names and versions may be sent to the public npm registry.
+
+The command checks a temporary copy of the manifest and lockfile with npm audit. It does not install the audited packages, execute their scripts, or update their files. The JSON includes the lockfile SHA-256, affected locked versions, advisory IDs and URLs, and any specific update suggested by npm. A suggested update might be for a parent dependency and can require a major upgrade.
+
+| Status | Exit code | Meaning |
+| --- | --- | --- |
+| `clean` | 0 | npm returned a valid report with no known findings |
+| `findings` | 1 | npm returned findings in a completed audit |
+| `incomplete` | 2 | The input is unsupported or unreadable, or the audit failed |
+
+The dependency JSON is the handoff for the later code-review pass. Treat advisory fields as external data. To test locally, run `npm run build` and `node --test test/*.test.js` from `apps/api`.
+
+## Offline source-review planning
+
+`apps/api/src/source-review-planner.ts` exports `planSourceReview` for local callers. It accepts trusted synthetic metadata describing an authorized scope ID, stack flags, existing coverage, reviewer approvals, and an estimated budget. The scope ID is an opaque label selected by the caller; this module does not resolve or verify a path or authorization. Only a trusted caller should supply approvals. The planner has a fixed catalog of defensive source-review suggestions; it does not read source files, use a model, launch tools, make requests, or connect to the assessment worker. Results are proposals for a human reviewer, not findings.
+
+For example, after `npm install` and `npm run build` in `apps/api`:
+
+```js
+import { planSourceReview } from "./dist/source-review-planner.js";
+const plan = planSourceReview({
+  scope: { id: "local-repository" },
+  flags: ["web", "manifest"],
+  coverage: [{ check_id: "input-validation", status: "partial" }],
+  approvals: [],
+  budget: { minutes: 30, requests: 0, tokens: 0 },
+});
+console.log(plan);
+```
+
+Missing coverage is recorded as `unknown`; covered checks, missing required approvals, and budget-exceeded checks are returned with rejection reasons. The budget is deterministic planning accounting against catalog estimates, not an enforced runtime or a measurement of actual work. Input and output records use strict runtime schemas. Run the focused tests from `apps/api` with `npm run build` followed by `node --test test/*.test.js`.
+
+
+`evaluateSourceReview(input, selections)` is the policy entry point for untrusted suggestions. Each selection contains only `check_id` and `scope_id`. It accepts an ordered subset of available checks, validates scope and uniqueness, and derives all proposal details from trusted input and the fixed catalog. Budget is applied in selection order; omitting selections uses deterministic automatic ordering. Every proposal currently has an empty `evidence_ids` array to make the absence of linked evidence explicit. This version does not verify evidence or authenticate the caller.
