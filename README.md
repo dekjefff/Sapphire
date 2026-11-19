@@ -117,6 +117,8 @@ Choose up to 8 source files within the package, each at most 8 KiB. The combined
 
 The dependency report is checked against the current lockfile digest. An incomplete dependency report can accompany the code review and carries its own status and reason. If neither the incomplete report nor the package has a lockfile digest, the report records that linkage could not be verified. The code review lists reviewed files, suggestions with source line evidence, and gaps. Treat suggestions as model output for human review. An invalid citation, invalid input, or provider failure returns `incomplete` and exit code 2.
 
+On the dashboard, choose the saved `code-review.json` under **AI Code Review**. The report is displayed separately from assessments and stays in the current browser tab. The dashboard displays the CLI's reported lockfile match and model findings for review.
+
 ## Offline source-review planning
 
 `apps/api/src/source-review-planner.ts` exports `planSourceReview` for local callers. It accepts trusted synthetic metadata describing an authorized scope ID, stack flags, existing coverage, reviewer approvals, and an estimated budget. The scope ID is an opaque label selected by the caller; this module does not resolve or verify a path or authorization. Only a trusted caller should supply approvals. The planner has a fixed catalog of defensive source-review suggestions; it does not read source files, use a model, launch tools, make requests, or connect to the assessment worker. Results are proposals for a human reviewer, not findings.
