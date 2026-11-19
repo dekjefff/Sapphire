@@ -1,6 +1,45 @@
 export type ServiceStatus = 'ok' | 'unavailable';
 export type JobStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 
+export interface PassiveCapture {
+  run_id: string;
+  authentication: 'verified' | 'asserted' | 'unverified';
+  asserted_session?: 'authenticated' | 'anonymous';
+  coverage: 'known' | 'unknown';
+  session?: {
+    state: 'authenticated' | 'anonymous';
+    method: 'server_session' | 'application_session';
+    checked_at: string;
+    role?: 'user' | 'admin' | 'service';
+    first_request: number | null;
+    last_request: number | null;
+  };
+  counts?: {
+    expected: number;
+    observed: number;
+    processed: number;
+    remaining: number;
+    requests: number;
+  };
+  observed?: PassiveCaptureItem[];
+  gaps?: PassiveCaptureItem[];
+  manifest?: {
+    status: 'completed' | 'failed';
+    events: {
+      at: string;
+      status: Exclude<JobStatus, 'cancelled'>;
+      error?: 'collection_failed' | 'session_check_failed';
+    }[];
+  };
+}
+
+export interface PassiveCaptureItem {
+  id: string;
+  label?: string;
+  status: 'pending' | 'observed' | 'failed' | 'skipped';
+  reason?: 'not_reached' | 'error' | 'not_applicable';
+}
+
 export interface HealthResponse {
   status: 'ok' | 'degraded';
   services: Record<string, ServiceStatus>;

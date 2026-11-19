@@ -1,0 +1,51 @@
+{
+  "realm": "sapphire",
+  "displayName": "Sapphire",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": true,
+  "registrationEmailAsUsername": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "bruteForceProtected": true,
+  "passwordPolicy": "length(12)",
+  "roles": {
+    "realm": [
+      { "name": "operator", "description": "Access to the shared Sapphire workspace" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "sapphire-web",
+      "name": "Sapphire",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${SAPPHIRE_OIDC_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["${SAPPHIRE_AUTH_URL}/api/auth/callback/keycloak"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${SAPPHIRE_AUTH_URL}/login"
+      },
+      "protocolMappers": [
+        {
+          "name": "Sapphire access",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "sapphire_roles",
+            "jsonType.label": "String",
+            "multivalued": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "access.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -39,3 +39,4 @@ next-env.d.ts
 
 # Sapphire local state
 /artifacts/
+/auth-users.local

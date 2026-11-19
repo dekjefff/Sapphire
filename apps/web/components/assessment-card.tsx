@@ -1,12 +1,12 @@
 'use client';
 
 import { useState, type SyntheticEvent } from 'react';
+import { API_URL } from '@/lib/api';
 import type { Assessment } from '@/lib/types';
 import { StatusPill } from './status-pill';
 import { DiscoveryPanel } from './discovery-panel';
+import { PassiveCapturePanel } from './passive-capture-panel';
 import styles from './assessment-card.module.css';
-
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 
 export function AssessmentCard({ assessment }: { assessment: Assessment }) {
   const [detail, setDetail] = useState<Assessment | null>(null);
@@ -183,6 +183,7 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
           })()}
       </details>
       <DiscoveryPanel assessmentId={assessment.id} />
+      <PassiveCapturePanel assessmentId={assessment.id} />
       {(assessment.normalized_finding_count ?? 0) > 0 && (
         <details className={styles.staticFindings} onToggle={loadAssessmentDetails}>
           <summary>Review static findings ({assessment.normalized_finding_count})</summary>

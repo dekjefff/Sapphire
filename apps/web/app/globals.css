@@ -31,3 +31,22 @@ button,
 input {
   font: inherit;
 }
+
+.account-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--color-line);
+  background: var(--color-white);
+}
+
+.account-bar button {
+  padding: 6px 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 6px;
+  background: var(--color-white);
+  color: var(--color-green);
+  cursor: pointer;
+}

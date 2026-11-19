@@ -1,6 +1,12 @@
-import type { Assessment, AssessmentCreated, AssessmentInput, HealthResponse } from './types';
+import type {
+  Assessment,
+  AssessmentCreated,
+  AssessmentInput,
+  HealthResponse,
+  PassiveCapture,
+} from './types';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+export const API_URL = '/api';
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, {
@@ -16,6 +22,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== 'undefined') window.location.replace('/login');
     const detail =
       body && typeof body === 'object' && 'detail' in body && typeof body.detail === 'string'
         ? body.detail
@@ -65,4 +72,17 @@ export function fetchAssessmentDetail(
     match_cursor: String(options.matchCursor ?? 0),
   });
   return request<Assessment>(`/assessments/${encodeURIComponent(id)}?${query}`);
+}
+
+export function fetchLatestPassiveCapture(id: string): Promise<PassiveCapture | null> {
+  return request<PassiveCapture | null>(
+    `/assessments/${encodeURIComponent(id)}/passive-captures/latest`,
+  );
+}
+
+export function importPassiveCapture(id: string, body: string): Promise<PassiveCapture> {
+  return request<PassiveCapture>(`/assessments/${encodeURIComponent(id)}/passive-captures`, {
+    method: 'POST',
+    body,
+  });
 }
