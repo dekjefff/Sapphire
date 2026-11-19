@@ -10,9 +10,15 @@ services:
       AUTH_KEYCLOAK_ISSUER: http://localhost:${SAPPHIRE_IDENTITY_PORT:-8180}/realms/sapphire
       SAPPHIRE_IDENTITY_INTERNAL_ORIGIN: http://identity:8080
       SAPPHIRE_INTERNAL_API_URL: http://api:8000/
+      SAPPHIRE_AI_REVIEW_PROXY_TOKEN: "${SAPPHIRE_AI_REVIEW_PROXY_TOKEN:-}"
     depends_on:
       identity:
         condition: service_started
+
+  api:
+    environment:
+      SAPPHIRE_AI_REVIEW_REQUIRE_PROXY: "1"
+      SAPPHIRE_AI_REVIEW_PROXY_TOKEN: "${SAPPHIRE_AI_REVIEW_PROXY_TOKEN:-}"
 
   identity:
     image: quay.io/keycloak/keycloak:26.7.5

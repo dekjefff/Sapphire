@@ -106,6 +106,12 @@ After applying database migration V8, an authenticated operator can associate an
 
 Retrieve redacted findings from `GET /assessments/<assessment-id>/zap-report/findings?limit=50&offset=0` and instances from `GET /assessments/<assessment-id>/zap-report/findings/<index>/instances?revision_id=<revision-id>&limit=50&offset=0`; limits are 1–100. A finding index is its zero-based position (page offset plus position). Each response has a revision ID; compare revisions across pages. Instance requests require the finding page's revision and return 409 if the report was replaced. No target is contacted by these endpoints.
 
+## AI Code Review
+
+Configure `GROQ_API_KEY` in the local Compose environment. For the Auth.js deployment, also set a random `SAPPHIRE_AI_REVIEW_PROXY_TOKEN` for the web and API containers to share. Keep both values out of Git.
+
+From the authenticated Dashboard, select **AI Code Review**, choose an assessment, supply its npm manifest, lockfile and the source files you want reviewed, then approve sharing and run. The API checks dependencies before it calls Groq, and saves the report with the assessment. You can reopen the latest saved report or open a CLI report in the tab.
+
 ## Stop and reset
 
 Stop containers while preserving database, queue, and artifact volumes:

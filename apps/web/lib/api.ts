@@ -86,3 +86,26 @@ export function importPassiveCapture(id: string, body: string): Promise<PassiveC
     body,
   });
 }
+
+export type CodeReviewInput = {
+  share_with_providers: true;
+  manifest: string;
+  lockfile: string;
+  sources: { name: string; text: string }[];
+};
+
+type SavedCodeReview = { report: unknown; created_at: string };
+
+export function fetchCodeReview(assessmentId: string): Promise<SavedCodeReview> {
+  return request(`/assessments/${encodeURIComponent(assessmentId)}/ai-code-review`);
+}
+
+export function submitCodeReview(
+  assessmentId: string,
+  input: CodeReviewInput,
+): Promise<SavedCodeReview> {
+  return request(`/assessments/${encodeURIComponent(assessmentId)}/ai-code-review`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}

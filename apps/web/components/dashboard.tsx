@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { AppShell } from './app-shell';
+import { AiCodeReviewPanel } from './ai-code-review-panel';
 import { AssessmentList } from './assessment-list';
 import { NewAssessmentForm } from './new-assessment-form';
 import { ServiceHealth } from './service-health';
@@ -58,6 +59,8 @@ export function Dashboard() {
         />
         <AssessmentList assessments={assessments} onRefresh={() => void refresh()} />
       </div>
+
+      <AiCodeReviewPanel assessments={assessments} />
 
       <footer className={styles.footer}>
         <span>Sapphire local workspace</span>
