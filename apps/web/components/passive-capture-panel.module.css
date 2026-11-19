@@ -1,0 +1,96 @@
+.panel {
+  margin-top: 10px;
+  border: 1px solid #e0e9e3;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #374740;
+  font-size: 12px;
+}
+
+.panel summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.form {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.form label {
+  font-weight: 700;
+}
+
+.form p {
+  margin: 0;
+}
+
+.form input {
+  width: 100%;
+  min-width: 0;
+  font: inherit;
+}
+
+.form button {
+  justify-self: start;
+  border: 0;
+  border-radius: 7px;
+  padding: 7px 12px;
+  background: #286e57;
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.form button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.notice {
+  color: #236650;
+}
+
+.notice:empty {
+  display: none;
+}
+
+.error {
+  color: #95251e;
+}
+
+.result {
+  margin-top: 12px;
+  border-top: 1px solid #e0e9e3;
+  padding-top: 10px;
+}
+
+.result h3 {
+  margin: 0;
+  font-size: inherit;
+}
+
+.result dl {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 10px;
+}
+
+.result dt {
+  font-weight: 700;
+}
+
+.result dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.subsection + .subsection {
+  margin-top: 8px;
+}
+
+.subsection li {
+  overflow-wrap: anywhere;
+}

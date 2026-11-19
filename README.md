@@ -5,27 +5,37 @@ Sapphire is a local-first tool for authorized web application assessments. The f
 ## Requirements
 
 - Docker Desktop with Docker Compose v2, or Docker Engine with the Compose plugin
-- Ports 8080 and 8000 available on localhost (or set `API_PORT` in `.env`)
+- Ports 8080 and 8180 available on localhost. Set `WEB_PORT` and `SAPPHIRE_IDENTITY_PORT` in `.env` to change them.
 - Internet access the first time images and the web build dependencies are downloaded
 
 ## Start
 
-From the repository root, copy the example environment file and start the stack:
+If you are setting up Sapphire for the first time, copy the example environment file from the repository root.
 
 ```powershell
 Copy-Item .env.example .env
-docker compose up --build -d
 ```
 
-On macOS/Linux, replace the first command with `cp .env.example .env`.
+On macOS/Linux, use `cp .env.example .env`. Then follow [Account sign-in and registration](#account-sign-in-and-registration).
 
-Wait until the services report healthy:
+## Account sign-in and registration
 
-```powershell
-docker compose ps
-```
+Sapphire opens to **Sign in** until an operator has a valid session. [Auth.js](https://authjs.dev/getting-started) manages Sapphire sessions and [Keycloak](https://www.keycloak.org/) handles sign-in, registration, and passwords. The web service checks the session before serving the dashboard or forwarding same-origin `/api` requests. The backend API and database are reachable only inside Docker. Operators share one workspace.
 
-Open the Sapphire dashboard at <http://localhost:8080>. The API health endpoint is <http://localhost:8000/health>. PostgreSQL and Redis have no host port mappings. The dashboard and API bind to localhost only. The worker, database, queue, and Juice Shop benchmark share a dedicated internal network; the scanner runner has no network interface. Juice Shop is available to the API as `http://juiceshop:3000` and is not published to the host.
+1. Add these values to your ignored `.env` file. Generate two independent secrets with `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`, and use a separate strong password for the Keycloak administrator.
+
+   ```dotenv
+   SAPPHIRE_AUTH_SECRET=<generated-session-secret>
+   SAPPHIRE_OIDC_CLIENT_SECRET=<generated-oidc-client-secret>
+   SAPPHIRE_IDENTITY_ADMIN_PASSWORD=<administrator-password>
+   ```
+
+2. If an earlier Sapphire proxy is running, stop it to free port 8080.
+3. Run `docker compose -f compose.yaml -f compose.authjs.yaml up --build -d`. Use the same pair of Compose files for subsequent commands in this mode.
+4. Open `http://localhost:8080`, choose **Sign in or register**, then use **Register** on the Keycloak page. Use the `localhost` URLs consistently for the registered OpenID Connect callback.
+5. Sign in to the Keycloak admin console at `http://localhost:8180/admin/` with the bootstrap administrator (`admin` by default). Select realm **sapphire**, open the new user, and assign the realm role **operator** under **Role mapping**. The user can then sign in to Sapphire and sign out from the dashboard.
+
+The Compose setup runs Keycloak in development mode on loopback. Configure SMTP in the **sapphire** realm before relying on password reset or enabling email verification. Keycloak stores accounts in the `identity_data` volume and imports the realm only when it is absent. Role changes are picked up on the next sign-in. Auth.js sessions expire within one hour. Use the Auth.js configuration for the dashboard when migrating from Caddy Basic login.
 
 ## Configure the source workspace
 
@@ -43,16 +53,9 @@ The local test profile uses server-owned fixed limits: crawl depth 3, at most 50
 
 Source intake inventories files read-only, computes a Git commit or deterministic content SHA-256 identity, and detects supported technologies. Route extraction covers Next.js file routes and statically resolved Express/Fastify routes; Express routers are linked through relative imports/re-exports and literal `app.use()` mount prefixes, including identifier aliases. Dynamic or unresolved mount paths are reported as warnings and omitted rather than guessed.
 
-Submit the assessment. The API persists the project, assessment, intake job, and audit events, then enqueues it in Redis. The worker records source identity, intake findings, technologies, and routes, then starts Semgrep and Trivy as separate auditable tool runs. The assessment is complete only when both reports are usable; scanner errors, timeouts, cancellation, missing Trivy databases, or malformed output produce failed/incomplete coverage. The dashboard refreshes statuses every three seconds. The same flow can be used through the API:
+Submit the assessment. The API persists the project, assessment, intake job, and audit events, then enqueues it in Redis. The worker records source identity, intake findings, technologies, and routes, then starts Semgrep and Trivy as separate auditable tool runs. The assessment is complete only when both reports are usable; scanner errors, timeouts, cancellation, missing Trivy databases, or malformed output produce failed/incomplete coverage. The dashboard refreshes statuses every three seconds. Browser API requests use the authenticated `/api` prefix.
 
-```powershell
-$body = @{ project_name = "My app"; repository_path = "/workspace/my-app"; target_url = "http://juiceshop:3000"; source_type = "local_path" } | ConvertTo-Json
-$created = Invoke-RestMethod -Method Post -Uri http://localhost:8000/assessments -ContentType "application/json" -Body $body
-$created
-Invoke-RestMethod -Uri "http://localhost:8000/jobs/$($created.job_id)"
-```
-
-For a ZIP upload, submit multipart form data to `POST /assessments/zip` with text fields `project_name`, `target_url`, `runtime_discovery_authorized` (`true` only after explicit authorization; omitted/false disables runtime discovery), and a file field `source`. The local-path JSON endpoint accepts the same boolean field. Check component health at <http://localhost:8000/health>. Assessment endpoints are `GET /assessments` and `GET /assessments/{assessment_id}`; detail responses include source identity, intake findings, technologies, routes, scanner coverage, grouped and original findings, tool provenance, raw-artifact links, discovery scope/runs/endpoints/matches/reasons. Discovery detail pages accept `limit` (1–100), `endpoint_cursor`, and `match_cursor`; the web UI provides bounded page-size and pagination controls. Job status is `GET /jobs/{job_id}`.
+For a ZIP upload, submit multipart form data to `POST /assessments/zip` with text fields `project_name`, `target_url`, `runtime_discovery_authorized` (`true` only after explicit authorization; omitted/false disables runtime discovery), and a file field `source`. The local-path JSON endpoint accepts the same boolean field. Check component health at `GET /api/health` after signing in. Assessment endpoints are `GET /assessments` and `GET /assessments/{assessment_id}`; detail responses include source identity, intake findings, technologies, routes, scanner coverage, grouped and original findings, tool provenance, raw-artifact links, discovery scope/runs/endpoints/matches/reasons. Discovery detail pages accept `limit` (1–100), `endpoint_cursor`, and `match_cursor`; the web UI provides bounded page-size and pagination controls. Job status is `GET /jobs/{job_id}`.
 
 ## Static scan operation
 
@@ -81,6 +84,28 @@ The intentionally vulnerable, test-only fixture in `samples/security-scan-fixtur
 
 On this Windows/OneDrive setup, scanning the same fixture through a mounted local path remained in Semgrep for over four minutes without producing an artifact and was cancelled. The ZIP intake run completed from the Docker-managed intake volume. Prefer ZIP intake for this fixture in this environment while the local bind-mount behavior remains unresolved.
 
+## Analyze a HAR with ZAP passive scan
+
+The local Sapphire CLI runs ZAP against recorded HTTP exchanges from a HAR file. Use a sanitized capture with 1–200 exchanges and a maximum size of 10 MiB. The CLI uses a pinned image, runs it with Docker networking disabled, and prints normalized findings. ZAP reads the recorded responses with `sendRequests: false`.
+
+```powershell
+docker pull ghcr.io/zaproxy/zaproxy@sha256:9624669db72f54d86c4b46a7064518bd9bf79d8c61a4c31befa9923489f328af
+npm.cmd --prefix apps/api run build
+node apps/api/dist/zap-passive-cli.js .\capture.har
+```
+
+To attach the result to an existing assessment, supply the web origin and `/api/assessments/<assessment-id>/zap-report` as the second argument. The import requires a valid Sapphire session in `SAPPHIRE_API_COOKIE` for that invocation. The CLI removes its temporary HAR and ZAP report after use. It prints a run ID during analysis and import. A successful upload adds `zap_report.passive_capture` to the assessment detail, with the run ID and the exchange and origin counts reported by the CLI. These counts describe the supplied HAR. Authentication is recorded as `unverified`, and report coverage may remain `unknown`.
+
+Use the [first-party capture recorder](docs/PASSIVE_EVIDENCE.md) to import session evidence, planned coverage, and run progress alongside a redacted HAR.
+
+## Review an existing ZAP report
+
+Build the API package and run `node apps/api/dist/zap-report-cli.js <report.json>` from the repository root to export normalized alerts and redacted HTTP metadata from a local Traditional JSON report. See the [Milestone 4 plan](docs/MILESTONE_4_PLAN.md) for the supported inputs and outputs.
+
+After applying database migration V8, an authenticated operator can associate an existing report with an assessment using `POST /api/assessments/<assessment-id>/zap-report`. This synchronous import stores only normalized metadata and the SHA-256 digest of the exact submitted bytes, never the source report. The POST response and assessment-detail `zap_report` summary expose the lowercase hex digest as `source_sha256`; imports made before V8 have a null digest. The operator chooses the association; Sapphire does not verify that the report belongs to the assessment target. `GET /assessments/<assessment-id>` exposes `zap_report` as missing or imported with coverage and diagnostic reason codes. An accepted import does not mean a scan passed or that coverage is complete. Failed imports leave the last accepted report unchanged.
+
+Retrieve redacted findings from `GET /assessments/<assessment-id>/zap-report/findings?limit=50&offset=0` and instances from `GET /assessments/<assessment-id>/zap-report/findings/<index>/instances?revision_id=<revision-id>&limit=50&offset=0`; limits are 1–100. A finding index is its zero-based position (page offset plus position). Each response has a revision ID; compare revisions across pages. Instance requests require the finding page's revision and return 409 if the report was replaced. No target is contacted by these endpoints.
+
 ## Stop and reset
 
 Stop containers while preserving database, queue, and artifact volumes:
@@ -107,7 +132,7 @@ The default PostgreSQL password is for local development only. Set `POSTGRES_PAS
 - `discovery-gateway`: network boundary enforcing pinned destination and path policy for the discovery runner
 - `samples/security-scan-fixture`: intentionally vulnerable test-only fixture for scanner validation; never install or execute it
 - PostgreSQL: projects, assessments, intake data, detected technologies/routes, tool definitions/runs, scan artifacts, normalized findings/groups, audit events, and Flyway-managed schema history
-- Flyway `12.11.0`: applies `V1__foundation.sql` through `V5__static_tool_pipeline.sql` before the API and worker start; its `flyway_schema_history` table records migration state
+- Flyway `12.11.0` applies migrations through `V9__passive_capture_evidence.sql` before the API and worker start. The `flyway_schema_history` table records migration state.
 - Redis: persistent queue volume
 - `intake` named volume: staged ZIP files and temporary extraction space shared by API/worker
 - `artifacts` named volume: raw JSON/SARIF scanner artifacts and metadata sidecars

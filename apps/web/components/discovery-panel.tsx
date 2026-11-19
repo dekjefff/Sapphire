@@ -1,11 +1,10 @@
 'use client';
 
 import { useState, type SyntheticEvent } from 'react';
-import { fetchAssessmentDetail } from '@/lib/api';
+import { API_URL, fetchAssessmentDetail } from '@/lib/api';
 import type { Assessment, DiscoveryMatch } from '@/lib/types';
 import styles from './assessment-card.module.css';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
 const REASONS: Record<string, string> = {
   route_matched: 'Runtime endpoint matched an identified source route.',
   source_only_not_observed: 'Source route was not observed during the bounded crawl.',

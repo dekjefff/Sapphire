@@ -15,6 +15,9 @@ import { createDiscoveryScope, type DiscoveryScopeApproval } from "./discovery-s
 import type { DiscoveryScope } from "./discovery-contracts.js";
 import { findDiscoveryProfile } from "./discovery/authorization-profiles.js";
 import { getDiscoveryBudgetDto, resolveDiscoveryState } from "./discovery/assessment-summary.js";
+import { registerZapImport, type ZapImportStore } from "./zap-import.js";
+import { registerPassiveEvidence } from "./passive-evidence-api.js";
+import { createPassiveEvidenceStore } from "./passive-evidence-store.js";
 
 const app = Fastify({ logger: true });
 const redis = createClient({ url: process.env.REDIS_URL ?? "redis://redis:6379/0" });
@@ -23,6 +26,27 @@ const artifactDir = process.env.ARTIFACT_DIR ?? "/artifacts";
 const origins = (process.env.CORS_ORIGINS ?? "http://localhost:3000").split(",").map((v) => v.trim()).filter(Boolean);
 await app.register(cors, { origin: origins, methods: ["GET", "POST"], allowedHeaders: ["Content-Type"] });
 await app.register(multipart, { limits: { files: 1, fileSize: 100 * 1024 * 1024, fields: 3, parts: 4 } });
+
+const zapStore: ZapImportStore = {
+  async save(id, report, sourceSha256) {
+    const result = await pool.query("INSERT INTO zap_report_imports (assessment_id,report,revision_id,source_sha256) SELECT id,$2::jsonb,$3,$4 FROM assessments WHERE id=$1 ON CONFLICT (assessment_id) DO UPDATE SET report=EXCLUDED.report, revision_id=EXCLUDED.revision_id, source_sha256=EXCLUDED.source_sha256, imported_at=now() RETURNING report,imported_at,revision_id,source_sha256", [id, JSON.stringify(report), randomUUID(), sourceSha256]);
+    return result.rows[0] ?? null;
+  },
+  async load(id) {
+    const result = await pool.query("SELECT z.report,z.imported_at,z.revision_id,z.source_sha256 FROM assessments a LEFT JOIN zap_report_imports z ON z.assessment_id=a.id WHERE a.id=$1", [id]);
+    if (!result.rowCount) return { exists: false, value: null };
+    const row = result.rows[0];
+    return { exists: true, value: row.report ? { report: row.report, imported_at: row.imported_at, revision_id: row.revision_id, source_sha256: row.source_sha256 } : null };
+  },
+};
+await app.register(async (scope) => registerZapImport(scope, zapStore));
+
+const captureKeyHex = process.env.PASSIVE_CAPTURE_KEY_HEX;
+if (captureKeyHex && !/^[0-9a-f]{64}$/i.test(captureKeyHex)) {
+  throw new Error("PASSIVE_CAPTURE_KEY_HEX must contain 64 hexadecimal characters");
+}
+const captureKey = captureKeyHex ? Buffer.from(captureKeyHex, "hex") : undefined;
+await app.register(async (scope) => registerPassiveEvidence(scope, createPassiveEvidenceStore(pool), captureKey));
 
 function parseId(value: string): string | null {
   return isUuid(value) ? value : null;
@@ -161,7 +185,7 @@ app.get<{ Params: { assessment_id: string } }>("/assessments/:assessment_id", as
   const { limit, endpoint_cursor: endpointCursor, match_cursor: matchCursor } = query.data;
   const result = await pool.query("SELECT a.id,p.name AS project_name,p.source_type,p.source_identity_type,p.source_identity,p.source_file_count,p.source_total_bytes,p.intake_status,a.target_url,a.status,a.coverage_status,a.created_at FROM assessments a JOIN projects p ON p.id=a.project_id WHERE a.id=$1", [id]);
   if (!result.rowCount) return reply.code(404).send({ detail: "Assessment not found" });
-  const [jobs, technologies, routes, findings, artifacts, groups, scopes, endpoints, endpointCount, matches, matchCount, classCounts, reasonCounts] = await Promise.all([
+  const [jobs, technologies, routes, findings, artifacts, groups, scopes, endpoints, endpointCount, matches, matchCount, classCounts, reasonCounts, zapImport] = await Promise.all([
     pool.query("SELECT id,tool_definition_id AS tool,status,coverage_status,tool_version,adapter_version,config_id,config_sha256,exit_code,failure_reason_code,counters,provenance,started_at,finished_at,cancel_requested FROM tool_runs WHERE assessment_id=$1 ORDER BY created_at", [id]),
     pool.query("SELECT name, category, confidence, evidence, reason FROM detected_technologies WHERE assessment_id=$1 ORDER BY category,name", [id]),
     pool.query("SELECT method,path,CASE WHEN source_file !~ '(^/|^[A-Za-z]:)' AND position(chr(92) in source_file)=0 AND source_file !~ '(^|/)\\.\\.(/|$)' THEN source_file ELSE NULL END AS source_file,source_line,confidence FROM discovered_routes WHERE assessment_id=$1 ORDER BY source_file,source_line NULLS LAST,method,path", [id]),
@@ -175,6 +199,7 @@ app.get<{ Params: { assessment_id: string } }>("/assessments/:assessment_id", as
     pool.query("SELECT count(*)::int AS count FROM endpoint_route_matches WHERE assessment_id=$1", [id]),
     pool.query("SELECT coverage_class,count(*)::int AS count FROM endpoint_route_matches WHERE assessment_id=$1 GROUP BY coverage_class", [id]),
     pool.query("SELECT reason_code,count(*)::int AS count FROM endpoint_route_matches WHERE assessment_id=$1 GROUP BY reason_code ORDER BY reason_code", [id]),
+    pool.query("SELECT revision_id, source_sha256, imported_at, report->>'tool' AS tool, report->>'zapVersion' AS zap_version, report->>'coverage' AS coverage, report->'coverageReasons' AS coverage_reasons, report->'passiveCapture' AS passive_capture, jsonb_array_length(report->'findings') AS finding_count FROM zap_report_imports WHERE assessment_id=$1", [id]),
   ]);
   const row = result.rows[0];
   const endpointTotal = Number(endpointCount.rows[0]?.count ?? 0);
@@ -188,6 +213,12 @@ app.get<{ Params: { assessment_id: string } }>("/assessments/:assessment_id", as
     technologies: technologies.rows, routes: routes.rows, findings: findings.rows,
     artifacts: artifacts.rows.map((artifact) => ({ ...artifact, id: String(artifact.id), tool_run_id: String(artifact.tool_run_id), created_at: artifact.created_at.toISOString() })),
     finding_groups: groups.rows,
+    zap_report: zapImport.rowCount ? {
+      ...zapImport.rows[0],
+      status: "imported",
+      passive_capture: zapImport.rows[0].passive_capture ?? undefined,
+      imported_at: zapImport.rows[0].imported_at.toISOString(),
+    } : { status: "missing" },
     discovery: { state: discoveryState, budget: getDiscoveryBudgetDto(), scope: scopes.rows[0] ?? null,
       counts: coverageCounts,
       reason_counts: Object.fromEntries(reasonCounts.rows.map((item) => [item.reason_code, Number(item.count)])),
