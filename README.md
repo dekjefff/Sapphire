@@ -117,7 +117,13 @@ Choose up to 8 source files within the package, each at most 8 KiB. The combined
 
 The dependency report is checked against the current lockfile digest. An incomplete dependency report can accompany the code review and carries its own status and reason. If neither the incomplete report nor the package has a lockfile digest, the report records that linkage could not be verified. The code review lists reviewed files, suggestions with source line evidence, and gaps. Treat suggestions as model output for human review. An invalid citation, invalid input, or provider failure returns `incomplete` and exit code 2.
 
-On the dashboard, choose the saved `code-review.json` under **AI Code Review**. The report is displayed separately from assessments and stays in the current browser tab. The dashboard displays the CLI's reported lockfile match and model findings for review.
+### Run AI Code Review from the dashboard
+
+Set `GROQ_API_KEY` in the local Compose environment and recreate the API container so it picks up the key. Open **AI Code Review** below the assessments, select an existing assessment, and choose `package.json`, `package-lock.json`, and one to eight source files from that package. Confirm sharing and click **Run AI Code Review**.
+
+The API runs the dependency check and then sends the selected source and audit summary to Groq. The submitted source files are removed from the temporary review directory when the run finishes. The saved report includes cited source lines. Use **Open latest saved review** to reopen the latest report for the selected assessment. The assessment is selected by the operator. Choose files from that assessment's project.
+
+To display a report from the CLI, choose `code-review.json` under **Open a CLI report**. Imported reports stay in the current browser tab.
 
 ## Offline source-review planning
 

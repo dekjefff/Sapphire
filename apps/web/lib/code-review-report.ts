@@ -89,7 +89,10 @@ export function parseCodeReviewReport(bytes: Uint8Array): CodeReviewReport {
   } catch {
     throw new Error('The selected file is not valid JSON.');
   }
+  return validateCodeReviewReport(data);
+}
 
+export function validateCodeReviewReport(data: unknown): CodeReviewReport {
   if (isObject(data) && data.schema_version === 1) {
     if (
       data.status === 'incomplete' &&

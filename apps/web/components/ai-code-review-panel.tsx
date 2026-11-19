@@ -1,11 +1,13 @@
 'use client';
 
 import { useState, type ChangeEvent } from 'react';
+import { CodeReviewForm } from './code-review-form';
 import {
   maxCodeReviewReportBytes,
   parseCodeReviewReport,
   type CodeReviewReport,
 } from '@/lib/code-review-report';
+import type { Assessment } from '@/lib/types';
 import styles from './ai-code-review-panel.module.css';
 
 type ImportState =
@@ -19,7 +21,7 @@ const dependencyLabels = {
   incomplete: 'Incomplete',
 };
 
-export function AiCodeReviewPanel() {
+export function AiCodeReviewPanel({ assessments }: { assessments: Assessment[] }) {
   const [state, setState] = useState<ImportState>({ status: 'empty' });
 
   async function importReport(event: ChangeEvent<HTMLInputElement>) {
@@ -43,7 +45,12 @@ export function AiCodeReviewPanel() {
   return (
     <section className={styles.panel} aria-labelledby="ai-review-title">
       <h2 id="ai-review-title">AI Code Review</h2>
-      <p id="ai-review-help">Open a CLI report here. It stays in this tab.</p>
+      <CodeReviewForm
+        assessments={assessments}
+        onReport={(report, label) => setState({ status: 'loaded', fileName: label, report })}
+      />
+      <h3 className={styles.importHeading}>Open a CLI report</h3>
+      <p id="ai-review-help">The imported file stays in this tab.</p>
       <div className={styles.controls}>
         <label className={styles.fileInput}>
           <span>Report file</span>
@@ -104,7 +111,7 @@ function ReviewResult({ fileName, report }: { fileName: string; report: CodeRevi
         </div>
         {audit && (
           <div>
-            <dt>Lockfile match reported by CLI</dt>
+            <dt>Lockfile match in report</dt>
             <dd>{audit.lockfile_verified ? 'Verified' : 'Unverified'}</dd>
           </div>
         )}

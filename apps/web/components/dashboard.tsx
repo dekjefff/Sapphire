@@ -54,7 +54,7 @@ export function Dashboard() {
         <AssessmentList assessments={assessments} onRefresh={() => void refresh()} />
       </div>
 
-      <AiCodeReviewPanel />
+      <AiCodeReviewPanel assessments={assessments} />
 
       <footer className={styles.footer}>
         <span>Sapphire local workspace</span>

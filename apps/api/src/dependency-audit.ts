@@ -127,7 +127,7 @@ type AuditRunner = (cwd: string) => Promise<{ stdout: string; exitCode: number }
 function npmRunner(npmCli: string): AuditRunner {
   return async cwd => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-      !/^(npm_|node_options$)/i.test(key)
+      /^(path|systemroot|temp|tmp|tmpdir|home|userprofile|localappdata|appdata|https?_proxy|no_proxy|node_extra_ca_certs)$/i.test(key)
     ));
     try {
       const { stdout } = await run(process.execPath, [

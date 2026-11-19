@@ -4,6 +4,8 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { createClient } from "redis";
 import { pool } from "./db.js";
+import { findNpmCli, registerDashboardCodeReview, runDashboardCodeReview, type SavedCodeReview } from "./dashboard-code-review.js";
+import { groqReview } from "./groq-review.js";
 import { isUuid, QUEUE_NAME, type JobMessage } from "./types.js";
 import { createAssessmentSchema, validateTarget } from "./validation.js";
 
@@ -13,6 +15,36 @@ redis.on("error", (error) => app.log.error({ err: error }, "Redis client error")
 const artifactDir = process.env.ARTIFACT_DIR ?? "/artifacts";
 const origins = (process.env.CORS_ORIGINS ?? "http://localhost:3000").split(",").map((v) => v.trim()).filter(Boolean);
 await app.register(cors, { origin: origins, methods: ["GET", "POST"], allowedHeaders: ["Content-Type"] });
+
+const groqKey = process.env.GROQ_API_KEY?.trim();
+const npmCli = groqKey ? findNpmCli() : undefined;
+const dashboardModel = groqKey && npmCli ? groqReview(groqKey) : undefined;
+const reviewEvent = "ai_code_review.finished";
+registerDashboardCodeReview(app, {
+  origins,
+  run: dashboardModel && npmCli ? (input) => runDashboardCodeReview(input, dashboardModel, npmCli) : undefined,
+  store: {
+    async exists(assessmentId) {
+      const result = await pool.query("SELECT 1 FROM assessments WHERE id=$1", [assessmentId]);
+      return result.rowCount === 1;
+    },
+    async latest(assessmentId) {
+      const result = await pool.query<{ details: SavedCodeReview["report"]; created_at: Date }>(
+        "SELECT details, created_at FROM audit_events WHERE assessment_id=$1 AND event_type=$2 ORDER BY id DESC LIMIT 1",
+        [assessmentId, reviewEvent],
+      );
+      const row = result.rows[0];
+      return row ? { report: row.details, created_at: row.created_at.toISOString() } : null;
+    },
+    async save(assessmentId, report) {
+      const result = await pool.query<{ created_at: Date }>(
+        "INSERT INTO audit_events (assessment_id, actor, event_type, details) VALUES ($1, 'dashboard', $2, $3) RETURNING created_at",
+        [assessmentId, reviewEvent, report],
+      );
+      return { report, created_at: result.rows[0].created_at.toISOString() };
+    },
+  },
+});
 
 function parseId(value: string): string | null {
   return isUuid(value) ? value : null;
