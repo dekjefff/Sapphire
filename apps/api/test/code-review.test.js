@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { auditDependencies } from "../dist/dependency-audit.js";
 import { reviewCode } from "../dist/code-review.js";
+import { groqReview } from "../dist/groq-review.js";
 import { ollamaReview } from "../dist/ollama-review.js";
 
 async function projectFixture(t, audited = true) {
@@ -120,4 +121,54 @@ test("flags invalid citations, unexpected actions and incomplete model responses
   const partial = ollamaReview("local-test", async () =>
     Response.json({ done: true, done_reason: "length", message: { content: "{}" } }));
   assert.equal((await run(partial)).reason, "model_request_failed");
+});
+
+test("Groq receives the same review context with strict output and returns grounded findings", async t => {
+  const { directory, report } = await projectFixture(t);
+  const model = groqReview("fixture-key", async (url, options) => {
+    assert.equal(url, "https://api.groq.com/openai/v1/chat/completions");
+    assert.equal(options.headers.Authorization, "Bearer fixture-key");
+    assert.equal(options.redirect, "error");
+    assert.ok(options.signal instanceof AbortSignal);
+    const body = JSON.parse(options.body);
+    assert.equal(body.model, "openai/gpt-oss-20b");
+    assert.equal(body.max_completion_tokens, 2048);
+    assert.equal(body.stream, false);
+    assert.equal(body.tools, undefined);
+    assert.equal(options.body.includes("fixture-key"), false);
+    assert.equal(body.response_format.type, "json_schema");
+    assert.equal(body.response_format.json_schema.strict, true);
+    const { schema } = body.response_format.json_schema;
+    assert.equal(schema.additionalProperties, false);
+    assert.equal(schema.properties.findings.items.additionalProperties, false);
+    assert.deepEqual(schema.required.sort(), ["coverage_gaps", "findings"]);
+    const context = JSON.parse(body.messages[1].content);
+    assert.equal(context.sources[0].file, "code.ts");
+    assert.equal(context.dependency_audit.included_findings[0].package, "example");
+    return Response.json({
+      choices: [{
+        finish_reason: "stop",
+        message: { content: JSON.stringify({ findings: [finding], coverage_gaps: [] }) },
+      }],
+    });
+  });
+  const result = await reviewCode(directory, report, ["code.ts"], model);
+  assert.equal(result.status, "reviewed");
+  assert.equal(result.model, "groq:openai/gpt-oss-20b");
+  assert.equal(result.findings[0].evidence, "export const retries = 0;");
+  assert.equal(JSON.stringify(result).includes("fixture-key"), false);
+});
+
+test("Groq auth, quota, and truncated responses remain incomplete", async t => {
+  const { directory, report } = await projectFixture(t);
+  for (const [response, expected] of [
+    [new Response("private provider error", { status: 401 }), "model_authentication_failed"],
+    [new Response(null, { status: 429 }), "model_rate_limited"],
+    [Response.json({ choices: [{ finish_reason: "length", message: { content: "{}" } }] }), "model_request_failed"],
+  ]) {
+    const result = await reviewCode(directory, report, ["code.ts"], groqReview("fixture-key", async () => response));
+    assert.equal(result.status, "incomplete");
+    assert.equal(result.reason, expected);
+    assert.equal(JSON.stringify(result).includes("private provider error"), false);
+  }
 });

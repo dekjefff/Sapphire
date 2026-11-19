@@ -45,6 +45,12 @@ export interface ReviewModel {
   review(data: string): Promise<unknown>;
 }
 
+export class ReviewModelRequestError extends Error {
+  constructor(readonly reason: "model_rate_limited" | "model_authentication_failed") {
+    super(reason);
+  }
+}
+
 class ReviewInputError extends Error {}
 
 async function readBounded(path: string, limit: number) {
@@ -161,8 +167,9 @@ export async function reviewCode(projectDirectory: string, reportFile: string, f
   let raw: unknown;
   try {
     raw = await model.review(data);
-  } catch {
-    return incompleteCodeReview("model_request_failed", dependencyAudit);
+  } catch (error) {
+    const reason = error instanceof ReviewModelRequestError ? error.reason : "model_request_failed";
+    return incompleteCodeReview(reason, dependencyAudit);
   }
   const result = modelReviewSchema.safeParse(raw);
   if (!result.success) return incompleteCodeReview("invalid_model_report", dependencyAudit);

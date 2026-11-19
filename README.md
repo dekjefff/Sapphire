@@ -94,15 +94,26 @@ The dependency JSON is the handoff for the later code-review pass. Treat advisor
 
 ## Run the second pass against selected source files
 
-Start a local Ollama server with cloud features disabled (`OLLAMA_NO_CLOUD=1`) and have a local model available that supports structured output and a 32K context. From `apps/api`, use the pass 1 report for the same package. Replace `<local-model>` with the installed model name:
+From `apps/api`, build and generate the pass 1 report for the package you want to review:
 
 ```powershell
 npm run build
 npm run --silent audit:dependencies -- . > dependency-audit.json
+```
+
+To use Groq, set `GROQ_API_KEY` in the environment and choose `--groq`. This uses `openai/gpt-oss-20b` with strict JSON Schema and sends the selected source text and a dependency summary to Groq. Use this option only for source you are allowed to share with Groq. The API key is read from the environment and is not included in the reports.
+
+```powershell
+npm run --silent review:code -- . dependency-audit.json --groq src/validation.ts src/types.ts > code-review.json
+```
+
+To review locally, start Ollama with cloud features disabled (`OLLAMA_NO_CLOUD=1`) and use an installed local model that supports structured output and a 32K context. Use its name in place of `--groq`:
+
+```powershell
 npm run --silent review:code -- . dependency-audit.json '<local-model>' src/validation.ts src/types.ts > code-review.json
 ```
 
-The CLI sends only the selected files and a bounded summary of dependency findings to the local provider at `127.0.0.1:11434`. Choose up to 8 source files within the package, each at most 8 KiB. The combined input is limited to 24 KB. The request allows up to 2 minutes and sets a 2,048 token output limit. Source text is supplied as data. The provider receives no tools or shell access.
+Choose up to 8 source files within the package, each at most 8 KiB. The combined input is limited to 24 KB. The request allows up to 2 minutes and sets a 2,048 token output limit. Start with one or two small files when using Groq's free quota. A rate limit returns `incomplete` with reason `model_rate_limited`. Source text is supplied as data. The provider receives no tools or shell access.
 
 The dependency report is checked against the current lockfile digest. An incomplete dependency report can accompany the code review and carries its own status and reason. If neither the incomplete report nor the package has a lockfile digest, the report records that linkage could not be verified. The code review lists reviewed files, suggestions with source line evidence, and gaps. Treat suggestions as model output for human review. An invalid citation, invalid input, or provider failure returns `incomplete` and exit code 2.
 
