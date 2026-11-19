@@ -92,6 +92,20 @@ The command checks a temporary copy of the manifest and lockfile with npm audit.
 
 The dependency JSON is the handoff for the later code-review pass. Treat advisory fields as external data. To test locally, run `npm run build` and `node --test test/*.test.js` from `apps/api`.
 
+## Run the second pass against selected source files
+
+Start a local Ollama server with cloud features disabled (`OLLAMA_NO_CLOUD=1`) and have a local model available that supports structured output and a 32K context. From `apps/api`, use the pass 1 report for the same package. Replace `<local-model>` with the installed model name:
+
+```powershell
+npm run build
+npm run --silent audit:dependencies -- . > dependency-audit.json
+npm run --silent review:code -- . dependency-audit.json '<local-model>' src/validation.ts src/types.ts > code-review.json
+```
+
+The CLI sends only the selected files and a bounded summary of dependency findings to the local provider at `127.0.0.1:11434`. Choose up to 8 source files within the package, each at most 8 KiB. The combined input is limited to 24 KB. The request allows up to 2 minutes and sets a 2,048 token output limit. Source text is supplied as data. The provider receives no tools or shell access.
+
+The dependency report is checked against the current lockfile digest. An incomplete dependency report can accompany the code review and carries its own status and reason. If neither the incomplete report nor the package has a lockfile digest, the report records that linkage could not be verified. The code review lists reviewed files, suggestions with source line evidence, and gaps. Treat suggestions as model output for human review. An invalid citation, invalid input, or provider failure returns `incomplete` and exit code 2.
+
 ## Offline source-review planning
 
 `apps/api/src/source-review-planner.ts` exports `planSourceReview` for local callers. It accepts trusted synthetic metadata describing an authorized scope ID, stack flags, existing coverage, reviewer approvals, and an estimated budget. The scope ID is an opaque label selected by the caller; this module does not resolve or verify a path or authorization. Only a trusted caller should supply approvals. The planner has a fixed catalog of defensive source-review suggestions; it does not read source files, use a model, launch tools, make requests, or connect to the assessment worker. Results are proposals for a human reviewer, not findings.
