@@ -176,12 +176,55 @@ test("HTTP 400 retries three times and only the provider error code is audited",
     );
     assert.equal(attempted, 4);
     assert.equal(report.requests, 4);
-    assert.equal(report.reason, recover ? null : "model_request_rejected");
+    assert.equal(report.reason, recover ? null : "file_coverage_incomplete");
     assert.equal(report.reviewed_files.length, recover ? 1 : 0);
     assert.deepEqual(events.map(event => [event.attempt, event.http_status, event.provider_error_code, event.retry_scheduled]),
       Array.from({ length: recover ? 3 : 4 }, (_, index) => [index + 1, 400, "json_validate_failed", index < 3]));
     assert.doesNotMatch(JSON.stringify({ events, report }), /private-error-message|private-response/);
   }
+});
+
+test("a truncated Groq batch is split with original line numbers and review continues", async t => {
+  const input = await fixture(t);
+  await writeFile(join(input.root, "src", "profile.ts"), Array.from({ length: 12 },
+    (_, index) => `export const value${index + 1} = ${index + 1};`).join("\n"));
+  const calls = [];
+  const result = await reviewProjectSource({ ...input, staticReport: firstPass }, {
+    name: "fixture",
+    async review(payload) {
+      const { file, first_line, lines } = JSON.parse(payload).sources[0];
+      calls.push([file, first_line, lines.length]);
+      if (lines.length === 12) throw new ReviewModelRequestError("model_request_rejected", 400, undefined, "json_validate_failed");
+      return {
+        findings: first_line === 7 ? [{
+          file, line: 7, severity: "low", title: "Review this field",
+          remediation: "Document its intended use.",
+        }] : [],
+        coverage_gaps: [],
+      };
+    },
+  }, { ...controls, clock: virtualClock() });
+  assert.deepEqual(calls, [["src/profile.ts", 1, 12], ["src/profile.ts", 1, 6],
+    ["src/profile.ts", 7, 6], ["src/other.ts", 1, 2]]);
+  assert.deepEqual(result.reviewed_files, ["src/profile.ts", "src/other.ts"]);
+  assert.equal(result.findings[0].evidence, "export const value7 = 7;");
+  assert.equal(result.reason, null);
+});
+
+test("persistent JSON validation failures do not stop later files", async t => {
+  const input = await fixture(t);
+  const result = await reviewProjectSource({ ...input, staticReport: firstPass }, {
+    name: "fixture",
+    async review(payload) {
+      if (JSON.parse(payload).sources[0].file === "src/profile.ts") {
+        throw new ReviewModelRequestError("model_request_rejected", 400, undefined, "json_validate_failed");
+      }
+      return { findings: [], coverage_gaps: [] };
+    },
+  }, { ...controls, clock: virtualClock() });
+  assert.equal(result.requests, 5);
+  assert.deepEqual(result.reviewed_files, ["src/other.ts"]);
+  assert.deepEqual(result.pending_files, [{ file: "src/profile.ts", reason: "model_response_truncated" }]);
 });
 
 test("invalid credentials are logged once and exhausted malformed batches do not block other files", async t => {

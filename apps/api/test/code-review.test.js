@@ -133,6 +133,7 @@ test("Groq receives the same review context with strict output and returns groun
     const body = JSON.parse(options.body);
     assert.equal(body.model, "openai/gpt-oss-20b");
     assert.equal(body.max_completion_tokens, 2048);
+    assert.equal(body.reasoning_effort, "low");
     assert.equal(body.stream, false);
     assert.equal(body.tools, undefined);
     assert.equal(options.body.includes("fixture-key"), false);

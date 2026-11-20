@@ -23,6 +23,7 @@ export function groqReview(apiKey: string, request: typeof fetch = fetch): Revie
       const raw = await requestReviewJson(request, endpoint, {
         model,
         stream: false,
+        reasoning_effort: "low",
         max_completion_tokens: 2048,
         messages: reviewMessages(data),
         response_format: {

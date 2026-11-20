@@ -157,7 +157,7 @@ export async function reviewProjectSource(
     return null;
   }
 
-  async function askModel(payload: string, tokens: number) {
+  async function askModel(payload: string, tokens: number, canSplit: boolean) {
     for (let attempt = 1; attempt <= maxReviewAttempts; attempt++) {
       const stop = await reserve(tokens);
       if (stop) return { stop, problem: null, data: null };
@@ -182,21 +182,25 @@ export async function reviewProjectSource(
         clearInterval(poll);
       }
       const reason = failure.reason;
-      const batchProblem = reason === "model_invalid_response" || reason === "model_response_truncated" || reason === "model_response_rejected";
+      const truncatedOutput = reason === "model_response_truncated" || failure.providerErrorCode === "json_validate_failed";
+      const batchProblem = truncatedOutput || reason === "model_invalid_response" || reason === "model_response_rejected";
+      const split = canSplit && truncatedOutput && report.requests < budget.requests;
       const retryable = failure.httpStatus === 400 ||
         (reason !== "model_authentication_failed" && reason !== "model_request_rejected" && reason !== "model_response_rejected");
-      const retry = retryable && attempt < maxReviewAttempts &&
-        report.requests < budget.requests && report.estimated_tokens_reserved + tokens <= budget.estimatedTokens;
+      const retry = split || (retryable && attempt < maxReviewAttempts &&
+        report.requests < budget.requests && report.estimated_tokens_reserved + tokens <= budget.estimatedTokens);
       await controls.recordFailure?.({
         attempt, request_number: report.requests, reason,
         http_status: failure.httpStatus ?? null, provider_error_code: failure.providerErrorCode ?? null, retry_scheduled: retry,
       });
+      if (split) return { stop: null, problem: null, data: null, split: true };
       if (!retry) {
         if (retryable && attempt < maxReviewAttempts) {
           const limit = report.requests >= budget.requests ? "request_budget" : "token_budget";
           return { stop: limit, problem: reason, data: null };
         }
-        return { stop: batchProblem ? null : reason, problem: batchProblem ? reason : null, data: null };
+        const problem = truncatedOutput ? "model_response_truncated" : reason;
+        return { stop: batchProblem ? null : reason, problem: batchProblem ? problem : null, data: null };
       }
       const interrupted = await pause(reviewBackoffMs(attempt, failure.retryAfterMs));
       if (interrupted) return { stop: interrupted, problem: null, data: null };
@@ -230,30 +234,44 @@ export async function reviewProjectSource(
     });
     let complete = true;
     try {
-      for (const batch of chunks(lines, maxPayloadBytes - Buffer.byteLength(encode(1, [])) - 32)) {
-        const payload = encode(batch.firstLine, batch.lines);
-        const result = await askModel(payload, Buffer.byteLength(payload) + promptOverhead + outputTokens);
-        if (!result.data) {
-          if (result.stop) report.reason = result.stop;
-          if (result.problem) pending.set(file, result.problem);
-          complete = false;
-          break;
+      fileChunks: for (const initial of chunks(lines, maxPayloadBytes - Buffer.byteLength(encode(1, [])) - 32)) {
+        const batches = [{ ...initial, depth: 0 }];
+        while (batches.length) {
+          const batch = batches.pop()!;
+          const payload = encode(batch.firstLine, batch.lines);
+          const result = await askModel(payload, Buffer.byteLength(payload) + promptOverhead + outputTokens,
+            batch.lines.length >= 8 && batch.depth < 2);
+          if (result.split) {
+            const mid = Math.floor(batch.lines.length / 2);
+            const depth = batch.depth + 1;
+            batches.push(
+              { firstLine: batch.firstLine + mid, lines: batch.lines.slice(mid), depth },
+              { firstLine: batch.firstLine, lines: batch.lines.slice(0, mid), depth },
+            );
+            continue;
+          }
+          if (!result.data) {
+            if (result.stop) report.reason = result.stop;
+            if (result.problem) pending.set(file, result.problem);
+            complete = false;
+            break fileChunks;
+          }
+          for (const finding of result.data.findings) {
+            const evidence = finding.file === file && batch.lines[finding.line - batch.firstLine]?.trim();
+            if (!evidence) { pending.set(file, "invalid_model_citation"); complete = false; continue; }
+            const key = JSON.stringify([file, finding.line, finding.title]);
+            if (findingKeys.has(key)) continue;
+            findingKeys.add(key);
+            report.findings.push({
+              ...finding, evidence: evidence.slice(0, 500),
+              related_static_finding_ids: staticFindings.filter((hint) => hint.line === finding.line).slice(0, 10).map((hint) => hint.id),
+            });
+          }
+          for (const gap of result.data.coverage_gaps) {
+            if (report.coverage_gaps.length < 50) report.coverage_gaps.push(`${file}: ${gap}`);
+          }
+          pending.set(file, complete ? "partially_reviewed" : "invalid_model_citation");
         }
-        for (const finding of result.data.findings) {
-          const evidence = finding.file === file && batch.lines[finding.line - batch.firstLine]?.trim();
-          if (!evidence) { pending.set(file, "invalid_model_citation"); complete = false; continue; }
-          const key = JSON.stringify([file, finding.line, finding.title]);
-          if (findingKeys.has(key)) continue;
-          findingKeys.add(key);
-          report.findings.push({
-            ...finding, evidence: evidence.slice(0, 500),
-            related_static_finding_ids: staticFindings.filter((hint) => hint.line === finding.line).slice(0, 10).map((hint) => hint.id),
-          });
-        }
-        for (const gap of result.data.coverage_gaps) {
-          if (report.coverage_gaps.length < 50) report.coverage_gaps.push(`${file}: ${gap}`);
-        }
-        pending.set(file, complete ? "partially_reviewed" : "invalid_model_citation");
       }
     } catch (error) {
       if (!(error instanceof Error) || error.message !== "line_size_limit") throw error;

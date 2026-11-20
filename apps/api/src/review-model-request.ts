@@ -14,7 +14,7 @@ const instructions = [
   "Report only concerns supported by the supplied source, with a precise file and original 1-based line number. The first line in each lines array has number first_line (or 1 when first_line is absent).",
   "Scanner and dependency findings are context. Independently review every source provided, including source without scanner findings. Mention a scanner connection only when supported by the cited source.",
   "Give remediation advice without commands, payloads, exploitation steps, or requests to run tests against a target.",
-  "Record any coverage gaps. Return only JSON conforming to the response schema.",
+  "Keep output compact. Report at most four distinct findings, brief remediation in one sentence each, and at most two actionable coverage gaps. Return only JSON conforming to the response schema.",
 ].join(" ");
 
 export const reviewInputSchema = z.toJSONSchema(modelReviewSchema, { io: "input" });

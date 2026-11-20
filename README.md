@@ -116,6 +116,8 @@ The separate `project-reviewer` service checks the fingerprint before sending ba
 
 Temporary errors from Groq and the dependency scanner can trigger up to three retries after the first attempt. Project reviews also retry Groq HTTP 400 responses. Each Groq attempt counts against the assessment budget. The backend records safe error categories, attempt numbers, HTTP statuses, and the provider's machine-readable error code when available. Provider messages and response bodies are discarded. If the review remains incomplete, the dashboard shows saved findings and coverage gaps with user-facing messages.
 
+Groq reviews use low reasoning effort and request compact JSON. If Groq cannot finish or validate the JSON, the worker can split a source chunk and retry the smaller pieces within the same budget. If a piece still cannot be reviewed, its file stays incomplete and the worker continues with the remaining files.
+
 ## Stop and reset
 
 Stop containers while preserving database, queue, and artifact volumes:
