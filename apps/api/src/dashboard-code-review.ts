@@ -62,6 +62,7 @@ export function registerDashboardCodeReview(app: FastifyInstance, options: {
   origins: string[];
   requireProxy?: boolean;
   proxyToken?: string;
+  projectReview?: (assessmentId: string) => Promise<unknown>;
   store: ReviewStore;
   run?: (input: ReviewInput) => Promise<Report>;
 }) {
@@ -84,6 +85,16 @@ export function registerDashboardCodeReview(app: FastifyInstance, options: {
       }
     },
   };
+
+  const getProjectReview = options.projectReview;
+  if (getProjectReview) {
+    app.get<{ Params: { assessment_id: string } }>("/assessments/:assessment_id/project-code-review", dashboardOnly, async (request, reply) => {
+      const id = request.params.assessment_id;
+      if (!isUuid(id)) return reply.code(400).send({ detail: "Assessment ID is invalid" });
+      reply.header("Cache-Control", "no-store");
+      return { review: await getProjectReview(id) };
+    });
+  }
 
   app.get<{ Params: { assessment_id: string } }>(path, dashboardOnly, async (request, reply) => {
     const id = request.params.assessment_id;

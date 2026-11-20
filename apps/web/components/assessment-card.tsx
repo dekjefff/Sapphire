@@ -6,6 +6,7 @@ import type { Assessment } from '@/lib/types';
 import { StatusPill } from './status-pill';
 import { DiscoveryPanel } from './discovery-panel';
 import { PassiveCapturePanel } from './passive-capture-panel';
+import { ProjectCodeReview } from './project-code-review';
 import styles from './assessment-card.module.css';
 
 export function AssessmentCard({ assessment }: { assessment: Assessment }) {
@@ -39,7 +40,7 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
         </div>
         <div className={styles.title}>
           <strong>{assessment.project_name}</strong>
-          <small>{assessment.target_url}</small>
+          <small>{assessment.target_url || 'Source review'}</small>
         </div>
         <StatusPill status={assessment.status} />
       </div>
@@ -184,6 +185,9 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
       </details>
       <DiscoveryPanel assessmentId={assessment.id} />
       <PassiveCapturePanel assessmentId={assessment.id} />
+      {assessment.ai_review && (
+        <ProjectCodeReview assessmentId={assessment.id} summary={assessment.ai_review} />
+      )}
       {(assessment.normalized_finding_count ?? 0) > 0 && (
         <details className={styles.staticFindings} onToggle={loadAssessmentDetails}>
           <summary>Review static findings ({assessment.normalized_finding_count})</summary>

@@ -16,6 +16,7 @@ import { refreshRouteMatches } from "./discovery/matching.js";
 import { DISCOVERY_ADAPTER_VERSION, DISCOVERY_TOOL_VERSIONS, discoveryArtifactLeaf, readGatewayEvents, sha256, verifyDiscoveryArtifact, waitForDiscoveryResult, writeDiscoveryInputs } from "./discovery/coordinator.js";
 import { hasCoverageGaps } from "./discovery/coverage.js";
 import { isReasonCode } from "./reason-codes.js";
+import { queueProjectReview } from "./project-review-queue.js";
 
 const redis = createClient({ url: process.env.REDIS_URL ?? "redis://redis:6379/0" });
 redis.on("error", (error) => console.error("Redis worker error:", error));
@@ -426,6 +427,12 @@ async function processJob(raw: string): Promise<void> {
       await pool.query("UPDATE assessments SET status='cancelled',coverage_status='incomplete',updated_at=now() WHERE id=$1", [assessmentId]);
       await audit(assessmentId, null, "worker", "assessment.cancelled", { phase: "static_pipeline" });
       return;
+    }
+    if (message.source_type === "zip") {
+      await queueProjectReview(assessmentId, message.source_path, source.contentSha256, [
+        { tool: "semgrep", status: semgrep.status, findings: semgrep.findings, failure_code: semgrep.failureCode },
+        { tool: "trivy", status: trivy.status, findings: trivy.findings, failure_code: trivy.failureCode },
+      ], source.findings.map(({ code }) => code).filter((code) => hasCoverageGaps([code])));
     }
     let discovery: { httpx: Awaited<ReturnType<typeof runDiscoveryTool>>; katana?: Awaited<ReturnType<typeof runDiscoveryTool>> } | undefined;
     const scope = await loadApprovedDiscoveryScope(assessmentId);

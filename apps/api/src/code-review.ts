@@ -42,7 +42,7 @@ export const modelReviewSchema = z.object({
 
 export interface ReviewModel {
   readonly name: string;
-  review(data: string): Promise<unknown>;
+  review(data: string, signal?: AbortSignal): Promise<unknown>;
 }
 
 export class ReviewModelRequestError extends Error {

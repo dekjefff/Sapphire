@@ -19,7 +19,7 @@ const replySchema = z.object({
 export function groqReview(apiKey: string, request: typeof fetch = fetch): ReviewModel {
   return {
     name: `groq:${model}`,
-    async review(data) {
+    async review(data, signal) {
       const raw = await requestReviewJson(request, endpoint, {
         model,
         stream: false,
@@ -29,7 +29,7 @@ export function groqReview(apiKey: string, request: typeof fetch = fetch): Revie
           type: "json_schema",
           json_schema: { name: "source_review", strict: true, schema },
         },
-      }, apiKey);
+      }, apiKey, signal);
       const reply = replySchema.parse(raw);
       return JSON.parse(reply.choices[0].message.content);
     },

@@ -110,7 +110,9 @@ Retrieve redacted findings from `GET /assessments/<assessment-id>/zap-report/fin
 
 Configure `GROQ_API_KEY` in the local Compose environment. For the Auth.js deployment, also set a random `SAPPHIRE_AI_REVIEW_PROXY_TOKEN` for the web and API containers to share. Keep both values out of Git.
 
-From the authenticated Dashboard, select **AI Code Review**, choose an assessment, supply its npm manifest, lockfile and the source files you want reviewed, then approve sharing and run. The API checks dependencies before it calls Groq, and saves the report with the assessment. You can reopen the latest saved report or open a CLI report in the tab.
+From the authenticated Dashboard, upload the project ZIP and choose **Include AI Code Review** when creating the assessment. The static worker runs Semgrep and Trivy, saves a JSON summary bound to the source fingerprint, and queues the review on the same assessment. The model reviews supported source files based on the ZIP inventory, including files with no scanner findings. Static or intake gaps remain visible as first-pass limitations.
+
+The separate `project-reviewer` service checks the fingerprint before sending batches to Groq. It supports up to 40 requests, 200,000 conservatively estimated token reservations, and 30 minutes per assessment. It tracks files that still need review and keeps confirmed source-line citations with each model suggestion. ZIP snapshots are removed after processing. Open **AI Code Review** on the assessment to see progress, findings and remaining files. The CLI report viewer remains available for reports created outside this workflow.
 
 ## Stop and reset
 

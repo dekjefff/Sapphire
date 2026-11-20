@@ -4,6 +4,7 @@ import type {
   AssessmentInput,
   HealthResponse,
   PassiveCapture,
+  ProjectReviewDetail,
 } from './types';
 
 export const API_URL = '/api';
@@ -45,8 +46,9 @@ export function submitAssessment(input: AssessmentInput): Promise<AssessmentCrea
   if (input.source_type === 'zip') {
     const body = new FormData();
     body.append('project_name', input.project_name);
-    body.append('target_url', input.target_url);
+    if (input.target_url) body.append('target_url', input.target_url);
     body.append('runtime_discovery_authorized', String(input.runtime_discovery_authorized));
+    body.append('ai_review_authorized', String(input.ai_review_authorized === true));
     if (input.source_file) body.append('source', input.source_file);
     return request<AssessmentCreated>('/assessments/zip', { method: 'POST', body });
   }
@@ -87,25 +89,6 @@ export function importPassiveCapture(id: string, body: string): Promise<PassiveC
   });
 }
 
-export type CodeReviewInput = {
-  share_with_providers: true;
-  manifest: string;
-  lockfile: string;
-  sources: { name: string; text: string }[];
-};
-
-type SavedCodeReview = { report: unknown; created_at: string };
-
-export function fetchCodeReview(assessmentId: string): Promise<SavedCodeReview> {
-  return request(`/assessments/${encodeURIComponent(assessmentId)}/ai-code-review`);
-}
-
-export function submitCodeReview(
-  assessmentId: string,
-  input: CodeReviewInput,
-): Promise<SavedCodeReview> {
-  return request(`/assessments/${encodeURIComponent(assessmentId)}/ai-code-review`, {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+export function fetchProjectReview(id: string): Promise<{ review: ProjectReviewDetail | null }> {
+  return request(`/assessments/${encodeURIComponent(id)}/project-code-review`);
 }

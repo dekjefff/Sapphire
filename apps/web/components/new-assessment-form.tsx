@@ -15,7 +15,7 @@ const initialForm: AssessmentInput = {
   project_name: 'Juice Shop demo',
   repository_path: '/workspace',
   target_url: 'http://juiceshop:3000',
-  source_type: 'local_path',
+  source_type: 'zip',
   runtime_discovery_authorized: false,
 };
 
@@ -23,12 +23,14 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
   const [form, setForm] = useState(initialForm);
   const [discoveryProfile, setDiscoveryProfile] = useState<'none' | 'juiceshop'>('none');
   const [submitting, setSubmitting] = useState(false);
+  const sourceOnly =
+    form.source_type === 'zip' && form.ai_review_authorized && discoveryProfile === 'none';
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSubmitting(true);
     try {
-      await onCreate(form);
+      await onCreate(sourceOnly ? { ...form, target_url: '' } : form);
     } finally {
       setSubmitting(false);
     }
@@ -66,6 +68,7 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
                 ...form,
                 source_type: event.target.value as 'local_path' | 'zip',
                 source_file: undefined,
+                ai_review_authorized: false,
               })
             }
           >
@@ -107,21 +110,23 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
             </span>
           </label>
         )}
-        <label>
-          Target URL
-          <input
-            required
-            type="url"
-            value={discoveryProfile === 'juiceshop' ? 'http://juiceshop:3000' : form.target_url}
-            readOnly={discoveryProfile === 'juiceshop'}
-            onChange={(event) => setForm({ ...form, target_url: event.target.value })}
-            placeholder="http://juiceshop:3000"
-          />
-          <span className={styles.hint}>
-            Enter the exact target origin you are authorized to assess. Runtime discovery is limited
-            to the selected exact profile; no public or third-party targets are supported.
-          </span>
-        </label>
+        {!sourceOnly && (
+          <label>
+            Target URL
+            <input
+              required
+              type="url"
+              value={discoveryProfile === 'juiceshop' ? 'http://juiceshop:3000' : form.target_url}
+              readOnly={discoveryProfile === 'juiceshop'}
+              onChange={(event) => setForm({ ...form, target_url: event.target.value })}
+              placeholder="http://juiceshop:3000"
+            />
+            <span className={styles.hint}>
+              Enter the exact target origin you are authorized to assess. Runtime discovery is
+              limited to the selected exact profile; no public or third-party targets are supported.
+            </span>
+          </label>
+        )}
         <label>
           Runtime discovery profile
           <select
@@ -162,6 +167,21 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
           </span>
         </label>
 
+        {form.source_type === 'zip' && (
+          <label className={styles.attestation}>
+            <input
+              type="checkbox"
+              checked={form.ai_review_authorized === true}
+              onChange={(event) => setForm({ ...form, ai_review_authorized: event.target.checked })}
+            />
+            <span>
+              Include AI Code Review after static scanning. I approve sending the project’s
+              supported source files and scanner summaries to Groq and saving the report with this
+              assessment.
+            </span>
+          </label>
+        )}
+
         {error && (
           <div className={`${styles.notice} ${styles.error}`} role="alert">
             {error}
@@ -173,7 +193,11 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
           </div>
         )}
         <button className={styles.primaryButton} disabled={submitting || disabled} type="submit">
-          {submitting ? 'Creating…' : 'Create assessment'}
+          {submitting
+            ? 'Creating…'
+            : form.ai_review_authorized
+              ? 'Start project review'
+              : 'Create assessment'}
           <span aria-hidden="true">→</span>
         </button>
       </form>

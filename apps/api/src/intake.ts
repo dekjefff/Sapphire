@@ -10,7 +10,7 @@ export type IntakeSource = { type: "local_path"; path: string } | { type: "zip";
 export type Technology = { name: string; category: string; confidence: number; evidence: string[]; reason: string };
 export type DiscoveredRoute = { method: string; path: string; file: string; line: number | null; confidence: number };
 export type Finding = { severity: "warning" | "error"; code: string; message: string };
-export type IntakeResult = { sourceType: string; canonicalLocation: string; identityType: "git_commit" | "content_sha256"; identity: string; fileCount: number; totalBytes: number; scanRoot: string; temporaryRoot: string | null; technologies: Technology[]; routes: DiscoveredRoute[]; findings: Finding[] };
+export type IntakeResult = { sourceType: string; canonicalLocation: string; identityType: "git_commit" | "content_sha256"; identity: string; contentSha256: string; files: string[]; fileCount: number; totalBytes: number; scanRoot: string; temporaryRoot: string | null; technologies: Technology[]; routes: DiscoveredRoute[]; findings: Finding[] };
 
 const excludedDirectoryNames = new Set([".git", "node_modules", ".next", "dist", "build", "vendor", "coverage", "out", ".turbo", ".cache", "target", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".gradle"]);
 type SkippedEntryReport = { total: number; entries: string[]; truncated: boolean; linkTotal: number; linkEntries: string[]; linkTruncated: boolean; categories: Map<string, number> };
@@ -656,7 +656,7 @@ export async function inspectSource(source: IntakeSource, jobId: string): Promis
     }
     const { files, size, hash, commit } = await inventory(root, skipped);
     const detected = await detect(root, files, skipped);
-    return { sourceType: source.type, canonicalLocation: source.type === "local_path" ? root : basename(source.path), identityType: commit ? "git_commit" : "content_sha256", identity: commit ?? hash, fileCount: files.length, totalBytes: size, scanRoot: root, temporaryRoot, ...detected };
+    return { sourceType: source.type, canonicalLocation: source.type === "local_path" ? root : basename(source.path), identityType: commit ? "git_commit" : "content_sha256", identity: commit ?? hash, contentSha256: hash, files, fileCount: files.length, totalBytes: size, scanRoot: root, temporaryRoot, ...detected };
   } catch (error) {
     if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true });
     throw error;
