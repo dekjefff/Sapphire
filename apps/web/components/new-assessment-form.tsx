@@ -177,7 +177,8 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
             <span>
               Include AI Code Review after static scanning. I approve sending the project’s
               supported source files and scanner summaries to Groq and saving the report with this
-              assessment.
+              assessment. Sapphire keeps a temporary copy of the ZIP for up to 48 hours so the
+              review can continue across processing windows.
             </span>
           </label>
         )}

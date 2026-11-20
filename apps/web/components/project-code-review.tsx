@@ -16,6 +16,10 @@ const labels: Record<ProjectReviewSummary['status'], string> = {
 
 const pendingPageSize = 30;
 const reasonLabels: Record<string, string> = {
+  continuing_review: 'Progress saved. Review will continue automatically.',
+  waiting_for_provider: 'Progress saved. Waiting for the AI service before continuing.',
+  project_budget:
+    'The review reached its overall project limit. Saved results are available below.',
   cancelled: 'Review was cancelled.',
   not_started: 'Waiting for review',
   partially_reviewed: 'Only part of this file was reviewed',

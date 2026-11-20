@@ -12,6 +12,8 @@ const promptOverhead = 1024;
 const outputTokens = 2048;
 const minuteTokens = 7600;
 export const projectReviewBudget = { requests: 40, estimatedTokens: 200_000, durationMs: 30 * 60 * 1000 };
+export const projectLifetimeBudget = { requests: 1200, estimatedTokens: 6_000_000, durationMs: 48 * 60 * 60 * 1000 };
+export const reviewSliceStops = new Set(["time_budget", "request_budget", "token_budget", "model_rate_limited"]);
 
 export type ScannerReport = {
   schema_version: 1;
@@ -48,6 +50,8 @@ export type ProjectReviewReport = {
   requests: number;
   estimated_tokens_reserved: number;
   reason: string | null;
+  resume_at?: { file: string; line: number; incomplete: boolean };
+  next_attempt_at?: string;
 };
 
 function isReviewable(file: string) {
@@ -82,7 +86,7 @@ function* chunks(lines: string[], limit: number) {
     }
     size += length;
   }
-  yield { firstLine: first + 1, lines: lines.slice(first) };
+  if (first < lines.length) yield { firstLine: first + 1, lines: lines.slice(first) };
 }
 
 export async function reviewProjectSource(
@@ -93,6 +97,7 @@ export async function reviewProjectSource(
     checkpoint: (report: ProjectReviewReport) => Promise<void>;
     recordFailure?: (failure: ModelAttemptFailure) => Promise<void>;
     budget?: typeof projectReviewBudget;
+    previous?: ProjectReviewReport | null;
     clock?: { now: () => number; wait: (milliseconds: number) => Promise<void> };
   },
 ) {
@@ -114,14 +119,27 @@ export async function reviewProjectSource(
     .slice(0, 3)
     .map(({ id, severity, rule }) => ({ id, severity, rule }));
   // Inventory determines coverage. Findings don't control which files are eligible.
-  const pending = new Map(allFiles.map((file) => [file, "not_started"]));
+  const previous = controls.previous;
+  const reviewed = new Set(previous?.reviewed_files ?? []);
+  const priorReasons = new Map(previous?.pending_files.map(({ file, reason }) => [file, reason]));
+  const pending = new Map(allFiles.filter((file) => !reviewed.has(file))
+    .map((file) => [file, priorReasons.get(file) ?? "not_started"]));
+  const remaining = [...pending.keys()].filter((file) => {
+    const reason = pending.get(file)!;
+    return file === previous?.resume_at?.file || reason === "not_started" ||
+      reason === "partially_reviewed" || reviewSliceStops.has(reason);
+  });
   const report: ProjectReviewReport = {
     schema_version: 1, model: model.name, total_files: allFiles.length,
-    excluded_files: input.files.length - allFiles.length, reviewed_files: [], pending_files: [],
-    findings: [], coverage_gaps: [], requests: 0, estimated_tokens_reserved: 0, reason: null,
+    excluded_files: input.files.length - allFiles.length, reviewed_files: [...reviewed], pending_files: [],
+    findings: [...(previous?.findings ?? [])], coverage_gaps: [...(previous?.coverage_gaps ?? [])],
+    requests: previous?.requests ?? 0, estimated_tokens_reserved: previous?.estimated_tokens_reserved ?? 0,
+    reason: null, resume_at: previous?.resume_at,
   };
+  const requestLimit = report.requests + budget.requests;
+  const tokenLimit = report.estimated_tokens_reserved + budget.estimatedTokens;
   const spend: { time: number; tokens: number }[] = [];
-  const findingKeys = new Set<string>();
+  const findingKeys = new Set(report.findings.map(({ file, line, title }) => JSON.stringify([file, line, title])));
   function refresh() {
     report.pending_files = [...pending].map(([file, reason]) => ({ file, reason }));
     return report;
@@ -133,8 +151,8 @@ export async function reviewProjectSource(
       if (await controls.cancelled()) return "cancelled";
       const now = clock.now();
       if (now >= deadline) return "time_budget";
-      if (report.requests >= budget.requests) return "request_budget";
-      if (report.estimated_tokens_reserved + tokens > budget.estimatedTokens) return "token_budget";
+      if (report.requests >= requestLimit) return "request_budget";
+      if (report.estimated_tokens_reserved + tokens > tokenLimit) return "token_budget";
       while (spend.length && now - spend[0].time >= 60_000) spend.shift();
       if (spend.reduce((sum, item) => sum + item.tokens, tokens) <= minuteTokens) {
         spend.push({ time: now, tokens });
@@ -148,6 +166,7 @@ export async function reviewProjectSource(
 
   async function pause(milliseconds: number) {
     const until = clock.now() + milliseconds;
+    if (until >= deadline) return "time_budget";
     while (clock.now() < until) {
       if (await controls.cancelled()) return "cancelled";
       const now = clock.now();
@@ -182,13 +201,17 @@ export async function reviewProjectSource(
         clearInterval(poll);
       }
       const reason = failure.reason;
+      if (reason === "model_rate_limited") {
+        const hold = Math.max(60_000, Math.min(failure.retryAfterMs ?? 300_000, projectLifetimeBudget.durationMs));
+        report.next_attempt_at = new Date(clock.now() + hold).toISOString();
+      }
       const truncatedOutput = reason === "model_response_truncated" || failure.providerErrorCode === "json_validate_failed";
       const batchProblem = truncatedOutput || reason === "model_invalid_response" || reason === "model_response_rejected";
-      const split = canSplit && truncatedOutput && report.requests < budget.requests;
+      const split = canSplit && truncatedOutput && report.requests < requestLimit;
       const retryable = failure.httpStatus === 400 ||
         (reason !== "model_authentication_failed" && reason !== "model_request_rejected" && reason !== "model_response_rejected");
       const retry = split || (retryable && attempt < maxReviewAttempts &&
-        report.requests < budget.requests && report.estimated_tokens_reserved + tokens <= budget.estimatedTokens);
+        report.requests < requestLimit && report.estimated_tokens_reserved + tokens <= tokenLimit);
       await controls.recordFailure?.({
         attempt, request_number: report.requests, reason,
         http_status: failure.httpStatus ?? null, provider_error_code: failure.providerErrorCode ?? null, retry_scheduled: retry,
@@ -196,7 +219,7 @@ export async function reviewProjectSource(
       if (split) return { stop: null, problem: null, data: null, split: true };
       if (!retry) {
         if (retryable && attempt < maxReviewAttempts) {
-          const limit = report.requests >= budget.requests ? "request_budget" : "token_budget";
+          const limit = report.requests >= requestLimit ? "request_budget" : "token_budget";
           return { stop: limit, problem: reason, data: null };
         }
         const problem = truncatedOutput ? "model_response_truncated" : reason;
@@ -208,16 +231,17 @@ export async function reviewProjectSource(
     throw new Error("review_attempt_state_invalid");
   }
 
-  for (const file of allFiles) {
+  for (const file of remaining) {
     if (await controls.cancelled()) { report.reason = "cancelled"; break; }
     if (clock.now() >= deadline) { report.reason = "time_budget"; break; }
-    if (report.requests >= budget.requests) { report.reason = "request_budget"; break; }
+    if (report.requests >= requestLimit) { report.reason = "request_budget"; break; }
     let lines: string[];
     try {
       lines = await readSource(root, file);
     } catch (error) {
       const reason = error instanceof Error && error.message === "file_size_limit" ? error.message : "source_unavailable";
       pending.set(file, reason);
+      if (report.resume_at?.file === file) delete report.resume_at;
       continue;
     }
     const staticFindings = hints.get(file) ?? [];
@@ -232,12 +256,14 @@ export async function reviewProjectSource(
       },
       sources: [{ file, first_line: firstLine, lines: sourceLines }],
     });
-    let complete = true;
+    const cursor = report.resume_at?.file === file ? report.resume_at : { file, line: 1, incomplete: false };
+    let complete = !cursor.incomplete;
     try {
-      fileChunks: for (const initial of chunks(lines, maxPayloadBytes - Buffer.byteLength(encode(1, [])) - 32)) {
-        const batches = [{ ...initial, depth: 0 }];
+      fileChunks: for (const initial of chunks(lines.slice(cursor.line - 1), maxPayloadBytes - Buffer.byteLength(encode(1, [])) - 32)) {
+        const batches = [{ ...initial, firstLine: initial.firstLine + cursor.line - 1, depth: 0 }];
         while (batches.length) {
           const batch = batches.pop()!;
+          report.resume_at = { file, line: batch.firstLine, incomplete: !complete };
           const payload = encode(batch.firstLine, batch.lines);
           const result = await askModel(payload, Buffer.byteLength(payload) + promptOverhead + outputTokens,
             batch.lines.length >= 8 && batch.depth < 2);
@@ -271,6 +297,9 @@ export async function reviewProjectSource(
             if (report.coverage_gaps.length < 50) report.coverage_gaps.push(`${file}: ${gap}`);
           }
           pending.set(file, complete ? "partially_reviewed" : "invalid_model_citation");
+          report.resume_at = { file, line: batch.firstLine + batch.lines.length, incomplete: !complete };
+          delete report.next_attempt_at;
+          await controls.checkpoint(refresh());
         }
       }
     } catch (error) {
@@ -278,8 +307,9 @@ export async function reviewProjectSource(
       pending.set(file, error.message);
       complete = false;
     }
-    if (complete) { pending.delete(file); report.reviewed_files.push(file); }
     if (report.reason) break;
+    delete report.resume_at;
+    if (complete) { pending.delete(file); report.reviewed_files.push(file); }
     await controls.checkpoint(refresh());
   }
   if (report.reason) {

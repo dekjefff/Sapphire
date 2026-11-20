@@ -260,3 +260,47 @@ test("dependency attempts are bounded and never retry unsupported input, cancell
     assert.equal(shouldRetryDependencyScan(reason, 1), false);
   }
 });
+
+test("a new review window resumes from the saved line and retains prior findings and accounting", async t => {
+  const input = await fixture(t);
+  const longFile = "src/profile.ts";
+  await writeFile(join(input.root, "src", "profile.ts"), Array.from({ length: 22 },
+    (_, index) => `export const field${index + 1} = "${"a".repeat(300)}";`).join("\n"));
+  const calls = [];
+  const model = {
+    name: "fixture",
+    async review(payload) {
+      const { file, first_line } = JSON.parse(payload).sources[0];
+      calls.push([file, first_line]);
+      return { findings: [{ file, line: first_line, severity: "low", title: "Review this declaration", remediation: "Document the intended value." }], coverage_gaps: [] };
+    },
+  };
+  const first = await reviewProjectSource({ ...input, staticReport: firstPass }, model, {
+    ...controls, clock: virtualClock(), budget: { requests: 1, estimatedTokens: 20_000, durationMs: 600_000 },
+  });
+  assert.equal(first.reason, "request_budget");
+  assert.equal(first.resume_at.file, longFile);
+  assert.ok(first.resume_at.line > 1);
+  assert.equal(first.findings.length, 1);
+  const second = await reviewProjectSource({ ...input, staticReport: firstPass }, model, {
+    ...controls, clock: virtualClock(), previous: JSON.parse(JSON.stringify(first)),
+  });
+  assert.deepEqual(calls[1], [longFile, first.resume_at.line]);
+  assert.equal(second.reason, null);
+  assert.ok(second.requests > first.requests);
+  assert.deepEqual(second.reviewed_files, ["src/profile.ts", "src/other.ts"]);
+  assert.equal(second.findings.filter(finding => finding.file === longFile && finding.line === 1).length, 1);
+});
+
+test("rate limit holds survive a processing window without resending before Retry-After", async t => {
+  const input = await fixture(t);
+  let calls = 0;
+  const result = await reviewProjectSource({ ...input, staticReport: firstPass }, {
+    name: "fixture",
+    async review() { calls++; throw new ReviewModelRequestError("model_rate_limited", 429, 120_000); },
+  }, { ...controls, clock: virtualClock(), budget: { requests: 4, estimatedTokens: 20_000, durationMs: 60_000 } });
+  assert.equal(calls, 1);
+  assert.equal(result.reason, "time_budget");
+  assert.equal(Date.parse(result.next_attempt_at), 120_000);
+  assert.equal(result.resume_at.line, 1);
+});
