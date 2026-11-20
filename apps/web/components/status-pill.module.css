@@ -9,7 +9,8 @@
   text-transform: uppercase;
 }
 
-.queued {
+.queued,
+.incomplete {
   background: #fff7e8;
   color: #aa7b22;
 }

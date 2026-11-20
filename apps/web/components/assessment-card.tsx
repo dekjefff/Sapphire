@@ -14,6 +14,19 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
   const [detailError, setDetailError] = useState('');
   const [loading, setLoading] = useState(false);
   const toolRuns = new Map((detail?.job ?? []).map((run) => [run.id, run]));
+  const aiStatus = assessment.ai_review?.status;
+  let status: typeof assessment.status | 'incomplete' = assessment.status;
+  if (
+    aiStatus &&
+    assessment.status !== 'cancelled' &&
+    assessment.status !== 'queued' &&
+    assessment.status !== 'running'
+  ) {
+    if (aiStatus === 'waiting_for_scans' || aiStatus === 'queued' || aiStatus === 'running')
+      status = 'running';
+    else if (aiStatus === 'cancelled') status = 'cancelled';
+    else if (aiStatus === 'incomplete' || assessment.status === 'failed') status = 'incomplete';
+  }
 
   async function loadAssessmentDetails(event: SyntheticEvent<HTMLDetailsElement>) {
     if (!event.currentTarget.open || detail || loading) return;
@@ -42,7 +55,7 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
           <strong>{assessment.project_name}</strong>
           <small>{assessment.target_url || 'Source review'}</small>
         </div>
-        <StatusPill status={assessment.status} />
+        <StatusPill status={status} />
       </div>
       <div className={styles.meta}>
         <span>Assessment</span>
@@ -150,9 +163,15 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
                     <div className={styles.findingMeta}>
                       <span>Tool {run.tool_version ?? 'unknown'}</span>
                       <span>Adapter {run.adapter_version ?? 'unknown'}</span>
-                      <span>Exit {run.exit_code ?? 'not run'}</span>
+                      {run.status === 'completed' && <span>Exit {run.exit_code ?? 'not run'}</span>}
                     </div>
-                    <p>{run.error ? `Reason: ${run.error}` : 'No scanner error recorded.'}</p>
+                    {run.status === 'failed' && (
+                      <p>
+                        {run.tool === 'trivy'
+                          ? 'Dependency scan could not finish. Any saved findings are available below.'
+                          : 'Static scan could not finish. Any saved findings are available below.'}
+                      </p>
+                    )}
                     <p className={styles.rule}>
                       Config: {run.config_id ?? 'unknown'} · SHA-256{' '}
                       {run.config_sha256 ?? 'unavailable'}
@@ -164,17 +183,18 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
                         {String(db.updated_at ?? 'unknown')}
                       </p>
                     )}
-                    {artifacts.map((artifact) => (
-                      <a
-                        key={artifact.id}
-                        href={`${API_URL}/artifacts/${artifact.id}`}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Open {artifact.artifact_kind} ({artifact.byte_size} bytes, SHA-256{' '}
-                        {artifact.sha256.slice(0, 12)})
-                      </a>
-                    ))}
+                    {run.status === 'completed' &&
+                      artifacts.map((artifact) => (
+                        <a
+                          key={artifact.id}
+                          href={`${API_URL}/artifacts/${artifact.id}`}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open {artifact.artifact_kind} ({artifact.byte_size} bytes, SHA-256{' '}
+                          {artifact.sha256.slice(0, 12)})
+                        </a>
+                      ))}
                   </section>
                 );
               })

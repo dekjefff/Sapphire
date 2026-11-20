@@ -164,7 +164,9 @@ test("Groq auth, quota, and truncated responses remain incomplete", async t => {
   for (const [response, expected] of [
     [new Response("private provider error", { status: 401 }), "model_authentication_failed"],
     [new Response(null, { status: 429 }), "model_rate_limited"],
-    [Response.json({ choices: [{ finish_reason: "length", message: { content: "{}" } }] }), "model_request_failed"],
+    [new Response("private provider error", { status: 422 }), "model_invalid_response"],
+    [new Response("private provider error", { status: 503 }), "model_provider_unavailable"],
+    [Response.json({ choices: [{ finish_reason: "length", message: { content: "{}" } }] }), "model_response_truncated"],
   ]) {
     const result = await reviewCode(directory, report, ["code.ts"], groqReview("fixture-key", async () => response));
     assert.equal(result.status, "incomplete");

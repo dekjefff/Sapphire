@@ -2,6 +2,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { modelReviewSchema, ReviewModelRequestError, type ReviewModel } from "./code-review.js";
+import { maxReviewAttempts, reviewBackoffMs } from "./review-retry.js";
 
 const sourceExtension = /\.(?:[cm]?[jt]sx?|py|go|java|cs|rs|rb|php|c|h|cpp|swift|kt|scala|vue|svelte|sql)$/i;
 const maxFileBytes = 256 * 1024;
@@ -27,6 +28,13 @@ type Finding = {
   related_static_finding_ids: string[];
 };
 type FileResult = { file: string; reason: string };
+export type ModelAttemptFailure = {
+  attempt: number;
+  request_number: number;
+  reason: string;
+  http_status: number | null;
+  retry_scheduled: boolean;
+};
 export type ProjectReviewReport = {
   schema_version: 1;
   model: string;
@@ -82,11 +90,14 @@ export async function reviewProjectSource(
   controls: {
     cancelled: () => Promise<boolean>;
     checkpoint: (report: ProjectReviewReport) => Promise<void>;
+    recordFailure?: (failure: ModelAttemptFailure) => Promise<void>;
     budget?: typeof projectReviewBudget;
+    clock?: { now: () => number; wait: (milliseconds: number) => Promise<void> };
   },
 ) {
   const budget = controls.budget ?? projectReviewBudget;
-  const deadline = Date.now() + budget.durationMs;
+  const clock = controls.clock ?? { now: Date.now, wait: delay };
+  const deadline = clock.now() + budget.durationMs;
   const signal = AbortSignal.timeout(budget.durationMs);
   const root = await realpath(input.root);
   const allFiles = input.files.filter(isReviewable);
@@ -119,7 +130,7 @@ export async function reviewProjectSource(
   async function reserve(tokens: number) {
     while (true) {
       if (await controls.cancelled()) return "cancelled";
-      const now = Date.now();
+      const now = clock.now();
       if (now >= deadline) return "time_budget";
       if (report.requests >= budget.requests) return "request_budget";
       if (report.estimated_tokens_reserved + tokens > budget.estimatedTokens) return "token_budget";
@@ -130,13 +141,70 @@ export async function reviewProjectSource(
         report.estimated_tokens_reserved += tokens;
         return null;
       }
-      await delay(Math.min(1000, deadline - now));
+      await clock.wait(Math.min(1000, deadline - now));
     }
+  }
+
+  async function pause(milliseconds: number) {
+    const until = clock.now() + milliseconds;
+    while (clock.now() < until) {
+      if (await controls.cancelled()) return "cancelled";
+      const now = clock.now();
+      if (now >= deadline) return "time_budget";
+      await clock.wait(Math.min(1000, Math.max(1, until - now), deadline - now));
+    }
+    return null;
+  }
+
+  async function askModel(payload: string, tokens: number) {
+    for (let attempt = 1; attempt <= maxReviewAttempts; attempt++) {
+      const stop = await reserve(tokens);
+      if (stop) return { stop, problem: null, data: null };
+      await controls.checkpoint(refresh());
+      const cancellation = new AbortController();
+      const poll = setInterval(() => {
+        void controls.cancelled().then((stopped) => {
+          if (stopped) cancellation.abort();
+        }).catch(() => undefined);
+      }, 1000);
+      let failure: ReviewModelRequestError | null = null;
+      try {
+        const raw = await model.review(payload, AbortSignal.any([signal, cancellation.signal]));
+        const parsed = modelReviewSchema.safeParse(raw);
+        if (parsed.success) return { stop: null, problem: null, data: parsed.data };
+        failure = new ReviewModelRequestError("model_invalid_response");
+      } catch (error) {
+        if (cancellation.signal.aborted) return { stop: "cancelled", problem: null, data: null };
+        if (signal.aborted) return { stop: "time_budget", problem: null, data: null };
+        failure = error instanceof ReviewModelRequestError ? error : new ReviewModelRequestError("model_network_error");
+      } finally {
+        clearInterval(poll);
+      }
+      const reason = failure.reason;
+      const batchProblem = reason === "model_invalid_response" || reason === "model_response_truncated" || reason === "model_response_rejected";
+      const retryable = reason !== "model_authentication_failed" && reason !== "model_request_rejected" && reason !== "model_response_rejected";
+      const retry = retryable && attempt < maxReviewAttempts &&
+        report.requests < budget.requests && report.estimated_tokens_reserved + tokens <= budget.estimatedTokens;
+      await controls.recordFailure?.({
+        attempt, request_number: report.requests, reason,
+        http_status: failure.httpStatus ?? null, retry_scheduled: retry,
+      });
+      if (!retry) {
+        if (retryable && attempt < maxReviewAttempts) {
+          const limit = report.requests >= budget.requests ? "request_budget" : "token_budget";
+          return { stop: limit, problem: reason, data: null };
+        }
+        return { stop: batchProblem ? null : reason, problem: batchProblem ? reason : null, data: null };
+      }
+      const interrupted = await pause(reviewBackoffMs(attempt, failure.retryAfterMs));
+      if (interrupted) return { stop: interrupted, problem: null, data: null };
+    }
+    throw new Error("review_attempt_state_invalid");
   }
 
   for (const file of allFiles) {
     if (await controls.cancelled()) { report.reason = "cancelled"; break; }
-    if (Date.now() >= deadline) { report.reason = "time_budget"; break; }
+    if (clock.now() >= deadline) { report.reason = "time_budget"; break; }
     if (report.requests >= budget.requests) { report.reason = "request_budget"; break; }
     let lines: string[];
     try {
@@ -162,29 +230,14 @@ export async function reviewProjectSource(
     try {
       for (const batch of chunks(lines, maxPayloadBytes - Buffer.byteLength(encode(1, [])) - 32)) {
         const payload = encode(batch.firstLine, batch.lines);
-        const stop = await reserve(Buffer.byteLength(payload) + promptOverhead + outputTokens);
-        if (stop) { report.reason = stop; complete = false; break; }
-        await controls.checkpoint(refresh());
-        const cancellation = new AbortController();
-        const poll = setInterval(() => {
-          void controls.cancelled().then((stopped) => {
-            if (stopped) cancellation.abort();
-          }).catch(() => undefined);
-        }, 1000);
-        let raw: unknown;
-        try {
-          raw = await model.review(payload, AbortSignal.any([signal, cancellation.signal]));
-        } catch (error) {
-          report.reason = cancellation.signal.aborted ? "cancelled" : signal.aborted ? "time_budget" :
-            error instanceof ReviewModelRequestError ? error.reason : "model_request_failed";
+        const result = await askModel(payload, Buffer.byteLength(payload) + promptOverhead + outputTokens);
+        if (!result.data) {
+          if (result.stop) report.reason = result.stop;
+          if (result.problem) pending.set(file, result.problem);
           complete = false;
           break;
-        } finally {
-          clearInterval(poll);
         }
-        const parsed = modelReviewSchema.safeParse(raw);
-        if (!parsed.success) { pending.set(file, "invalid_model_report"); complete = false; break; }
-        for (const finding of parsed.data.findings) {
+        for (const finding of result.data.findings) {
           const evidence = finding.file === file && batch.lines[finding.line - batch.firstLine]?.trim();
           if (!evidence) { pending.set(file, "invalid_model_citation"); complete = false; continue; }
           const key = JSON.stringify([file, finding.line, finding.title]);
@@ -195,7 +248,7 @@ export async function reviewProjectSource(
             related_static_finding_ids: staticFindings.filter((hint) => hint.line === finding.line).slice(0, 10).map((hint) => hint.id),
           });
         }
-        for (const gap of parsed.data.coverage_gaps) {
+        for (const gap of result.data.coverage_gaps) {
           if (report.coverage_gaps.length < 50) report.coverage_gaps.push(`${file}: ${gap}`);
         }
         pending.set(file, complete ? "partially_reviewed" : "invalid_model_citation");

@@ -5,6 +5,8 @@ import { join } from "node:path";
 import test from "node:test";
 import { reviewProjectSource } from "../dist/project-review.js";
 import { createZipAssessmentSchema } from "../dist/validation.js";
+import { ReviewModelRequestError } from "../dist/code-review.js";
+import { shouldRetryDependencyScan } from "../dist/review-retry.js";
 
 const assessmentId = "9e139a02-6a97-4549-9ba6-3ae06a367195";
 const firstPass = {
@@ -105,4 +107,84 @@ test("invalid citations cannot mark the file reviewed or attach another file as 
   assert.deepEqual(result.findings, []);
   assert.deepEqual(result.reviewed_files, []);
   assert.deepEqual(result.pending_files, [{ file: "src/profile.ts", reason: "invalid_model_citation" }]);
+});
+
+function virtualClock() {
+  let now = 0;
+  return { now: () => now, async wait(ms) { now += ms; } };
+}
+
+test("Groq gets one initial attempt plus three retries with reserved budget and structured diagnostics", async t => {
+  const input = await fixture(t);
+  const clock = virtualClock();
+  const events = [];
+  const timestamps = [];
+  const result = await reviewProjectSource({ ...input, files: ["src/profile.ts"], staticReport: firstPass }, {
+    name: "fixture",
+    async review() {
+      timestamps.push(clock.now());
+      if (timestamps.length === 1) throw new ReviewModelRequestError("model_rate_limited", 429, 7_000);
+      if (timestamps.length <= 3) throw new ReviewModelRequestError("model_provider_unavailable", 503);
+      return { findings: [], coverage_gaps: [] };
+    },
+  }, { ...controls, clock, async recordFailure(event) { events.push(event); } });
+  assert.equal(result.reason, null);
+  assert.equal(result.requests, 4);
+  assert.ok(result.estimated_tokens_reserved > 4 * 2048);
+  assert.ok(timestamps[1] - timestamps[0] >= 7_000);
+  assert.deepEqual(events.map(event => [event.attempt, event.http_status, event.retry_scheduled]),
+    [[1, 429, true], [2, 503, true], [3, 503, true]]);
+});
+
+test("when all four attempts fail, saved findings and uncovered files remain", async t => {
+  const input = await fixture(t);
+  const events = [];
+  const result = await reviewProjectSource({ ...input, staticReport: firstPass }, {
+    name: "fixture",
+    async review(payload) {
+      const file = JSON.parse(payload).sources[0].file;
+      if (file === "src/other.ts") throw new ReviewModelRequestError("model_network_error");
+      return { findings: [{ file, line: 2, severity: "low", title: "Review returned fields", remediation: "Minimize the exposed profile fields." }], coverage_gaps: [] };
+    },
+  }, { ...controls, clock: virtualClock(), async recordFailure(event) { events.push(event); } });
+  assert.equal(result.requests, 5);
+  assert.equal(result.reason, "model_network_error");
+  assert.equal(result.findings[0].evidence, "return profile;");
+  assert.deepEqual(result.reviewed_files, ["src/profile.ts"]);
+  assert.deepEqual(result.pending_files, [{ file: "src/other.ts", reason: "model_network_error" }]);
+  assert.deepEqual(events.map(event => event.retry_scheduled), [true, true, true, false]);
+});
+
+test("invalid credentials are logged once and exhausted malformed batches do not block other files", async t => {
+  const input = await fixture(t);
+  const events = [];
+  const failed = await reviewProjectSource({ ...input, staticReport: firstPass }, {
+    name: "fixture",
+    async review() { throw new ReviewModelRequestError("model_authentication_failed", 401); },
+  }, { ...controls, clock: virtualClock(), async recordFailure(event) { events.push(event); } });
+  assert.equal(failed.requests, 1);
+  assert.equal(failed.reason, "model_authentication_failed");
+  assert.deepEqual(events.map(event => event.retry_scheduled), [false]);
+
+  const partial = await reviewProjectSource({ ...input, staticReport: firstPass }, {
+    name: "fixture",
+    async review(payload) {
+      if (JSON.parse(payload).sources[0].file === "src/profile.ts") {
+        throw new ReviewModelRequestError("model_response_truncated");
+      }
+      return { findings: [], coverage_gaps: [] };
+    },
+  }, { ...controls, clock: virtualClock() });
+  assert.equal(partial.requests, 5);
+  assert.equal(partial.reason, "file_coverage_incomplete");
+  assert.deepEqual(partial.reviewed_files, ["src/other.ts"]);
+  assert.deepEqual(partial.pending_files, [{ file: "src/profile.ts", reason: "model_response_truncated" }]);
+});
+
+test("dependency attempts are bounded and never retry unsupported input, cancellation, or a missing database", () => {
+  for (const attempt of [1, 2, 3]) assert.equal(shouldRetryDependencyScan("scanner_exit_nonzero", attempt), true);
+  assert.equal(shouldRetryDependencyScan("scanner_exit_nonzero", 4), false);
+  for (const reason of ["trivy_db_metadata_missing", "trivy_db_metadata_invalid", "invalid_zip_snapshot", "cancelled"]) {
+    assert.equal(shouldRetryDependencyScan(reason, 1), false);
+  }
 });

@@ -68,6 +68,12 @@ async function processReview(job: Job, key: string | undefined) {
       async checkpoint(progress) {
         await pool.query("UPDATE project_code_reviews SET report=$2,updated_at=now() WHERE assessment_id=$1 AND status='running'", [id, progress]);
       },
+      async recordFailure(failure) {
+        await pool.query(
+          "INSERT INTO audit_events (assessment_id,actor,event_type,details) VALUES ($1,'project-reviewer','ai_code_review.attempt_failed',$2)",
+          [id, failure],
+        );
+      },
     });
     const stopped = await cancelled(id);
     await pool.query(`

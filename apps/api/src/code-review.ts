@@ -45,8 +45,13 @@ export interface ReviewModel {
   review(data: string, signal?: AbortSignal): Promise<unknown>;
 }
 
+export type ModelFailureReason =
+  | "model_rate_limited" | "model_authentication_failed" | "model_network_error"
+  | "model_timeout" | "model_provider_unavailable" | "model_request_rejected"
+  | "model_invalid_response" | "model_response_truncated" | "model_response_rejected";
+
 export class ReviewModelRequestError extends Error {
-  constructor(readonly reason: "model_rate_limited" | "model_authentication_failed") {
+  constructor(readonly reason: ModelFailureReason, readonly httpStatus?: number, readonly retryAfterMs?: number) {
     super(reason);
   }
 }

@@ -15,7 +15,35 @@ const labels: Record<ProjectReviewSummary['status'], string> = {
 };
 
 const pendingPageSize = 30;
-const labelReason = (reason: string) => reason.replaceAll('_', ' ');
+const reasonLabels: Record<string, string> = {
+  cancelled: 'Review was cancelled.',
+  not_started: 'Waiting for review',
+  partially_reviewed: 'Only part of this file was reviewed',
+  time_budget: 'The review reached its time limit.',
+  request_budget: 'The review reached its request limit.',
+  token_budget: 'The review reached its token limit.',
+  file_size_limit: 'This file exceeds the review size limit.',
+  line_size_limit: 'A line exceeds the review size limit.',
+  source_unavailable: 'Unable to read this source file.',
+  model_authentication_failed:
+    'The AI service needs a valid connection. Contact your workspace administrator.',
+  model_not_configured: 'The AI service has not been configured.',
+  model_rate_limited:
+    'The AI service reached its usage limit. Results saved so far are available below.',
+  model_invalid_response: 'The AI response could not be verified.',
+  invalid_model_report: 'The AI response could not be verified.',
+  invalid_model_citation: 'Some source references could not be verified.',
+  model_response_truncated: 'The AI did not return a complete response.',
+  model_response_rejected: 'The AI did not review this section.',
+  no_supported_source_files: 'There are no supported source files to review.',
+  file_coverage_incomplete:
+    'Some files could not be fully reviewed. Results saved so far are available below.',
+};
+
+const labelReason = (reason: string) =>
+  Object.hasOwn(reasonLabels, reason)
+    ? reasonLabels[reason]
+    : 'This part of the review could not finish. Any saved results are available below.';
 
 export function ProjectCodeReview({
   assessmentId,

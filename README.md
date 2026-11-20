@@ -114,6 +114,8 @@ From the authenticated Dashboard, upload the project ZIP and choose **Include AI
 
 The separate `project-reviewer` service checks the fingerprint before sending batches to Groq. It supports up to 40 requests, 200,000 conservatively estimated token reservations, and 30 minutes per assessment. It tracks files that still need review and keeps confirmed source-line citations with each model suggestion. ZIP snapshots are removed after processing. Open **AI Code Review** on the assessment to see progress, findings and remaining files. The CLI report viewer remains available for reports created outside this workflow.
 
+Temporary errors from Groq and the dependency scanner can trigger up to three retries after the first attempt. Each Groq attempt counts against the assessment budget. The backend records safe error categories, attempt numbers and HTTP statuses without saving provider error bodies. If the review remains incomplete, the dashboard shows saved findings and coverage gaps with user-facing messages.
+
 ## Stop and reset
 
 Stop containers while preserving database, queue, and artifact volumes:
