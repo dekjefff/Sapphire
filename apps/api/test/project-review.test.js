@@ -6,6 +6,7 @@ import test from "node:test";
 import { reviewProjectSource } from "../dist/project-review.js";
 import { createZipAssessmentSchema } from "../dist/validation.js";
 import { ReviewModelRequestError } from "../dist/code-review.js";
+import { groqReview } from "../dist/groq-review.js";
 import { shouldRetryDependencyScan } from "../dist/review-retry.js";
 
 const assessmentId = "9e139a02-6a97-4549-9ba6-3ae06a367195";
@@ -153,6 +154,34 @@ test("when all four attempts fail, saved findings and uncovered files remain", a
   assert.deepEqual(result.reviewed_files, ["src/profile.ts"]);
   assert.deepEqual(result.pending_files, [{ file: "src/other.ts", reason: "model_network_error" }]);
   assert.deepEqual(events.map(event => event.retry_scheduled), [true, true, true, false]);
+});
+
+test("HTTP 400 retries three times and only the provider error code is audited", async t => {
+  const input = await fixture(t);
+  for (const recover of [true, false]) {
+    let attempted = 0;
+    const events = [];
+    const model = groqReview("fixture", async () => {
+      attempted++;
+      if (recover && attempted === 4) {
+        return Response.json({ choices: [{ finish_reason: "stop", message: { content: '{"findings":[],"coverage_gaps":[]}' } }] });
+      }
+      return Response.json({ error: {
+        code: "json_validate_failed", message: "private-error-message", failed_generation: "private-response",
+      } }, { status: 400 });
+    });
+    const report = await reviewProjectSource(
+      { ...input, files: ["src/profile.ts"], staticReport: firstPass },
+      model, { ...controls, clock: virtualClock(), async recordFailure(event) { events.push(event); } },
+    );
+    assert.equal(attempted, 4);
+    assert.equal(report.requests, 4);
+    assert.equal(report.reason, recover ? null : "model_request_rejected");
+    assert.equal(report.reviewed_files.length, recover ? 1 : 0);
+    assert.deepEqual(events.map(event => [event.attempt, event.http_status, event.provider_error_code, event.retry_scheduled]),
+      Array.from({ length: recover ? 3 : 4 }, (_, index) => [index + 1, 400, "json_validate_failed", index < 3]));
+    assert.doesNotMatch(JSON.stringify({ events, report }), /private-error-message|private-response/);
+  }
 });
 
 test("invalid credentials are logged once and exhausted malformed batches do not block other files", async t => {

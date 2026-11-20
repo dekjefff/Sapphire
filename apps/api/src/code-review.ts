@@ -51,7 +51,12 @@ export type ModelFailureReason =
   | "model_invalid_response" | "model_response_truncated" | "model_response_rejected";
 
 export class ReviewModelRequestError extends Error {
-  constructor(readonly reason: ModelFailureReason, readonly httpStatus?: number, readonly retryAfterMs?: number) {
+  constructor(
+    readonly reason: ModelFailureReason,
+    readonly httpStatus?: number,
+    readonly retryAfterMs?: number,
+    readonly providerErrorCode?: string,
+  ) {
     super(reason);
   }
 }

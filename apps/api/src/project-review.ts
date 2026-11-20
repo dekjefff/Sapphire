@@ -33,6 +33,7 @@ export type ModelAttemptFailure = {
   request_number: number;
   reason: string;
   http_status: number | null;
+  provider_error_code: string | null;
   retry_scheduled: boolean;
 };
 export type ProjectReviewReport = {
@@ -182,12 +183,13 @@ export async function reviewProjectSource(
       }
       const reason = failure.reason;
       const batchProblem = reason === "model_invalid_response" || reason === "model_response_truncated" || reason === "model_response_rejected";
-      const retryable = reason !== "model_authentication_failed" && reason !== "model_request_rejected" && reason !== "model_response_rejected";
+      const retryable = failure.httpStatus === 400 ||
+        (reason !== "model_authentication_failed" && reason !== "model_request_rejected" && reason !== "model_response_rejected");
       const retry = retryable && attempt < maxReviewAttempts &&
         report.requests < budget.requests && report.estimated_tokens_reserved + tokens <= budget.estimatedTokens;
       await controls.recordFailure?.({
         attempt, request_number: report.requests, reason,
-        http_status: failure.httpStatus ?? null, retry_scheduled: retry,
+        http_status: failure.httpStatus ?? null, provider_error_code: failure.providerErrorCode ?? null, retry_scheduled: retry,
       });
       if (!retry) {
         if (retryable && attempt < maxReviewAttempts) {

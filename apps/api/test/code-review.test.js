@@ -174,3 +174,15 @@ test("Groq auth, quota, and truncated responses remain incomplete", async t => {
     assert.equal(JSON.stringify(result).includes("private provider error"), false);
   }
 });
+
+test("provider error code extraction ignores missing, unsafe, and oversized data", async () => {
+  for (const body of [
+    { error: { message: "no code" } },
+    { error: { code: "gsk_fixture_token" } },
+    { error: { code: "invalid_request\n" } },
+    { error: { code: "invalid_request", message: "x".repeat(33 * 1024) } },
+  ]) {
+    const model = groqReview("fixture", async () => Response.json(body, { status: 400 }));
+    await assert.rejects(model.review("{}"), { httpStatus: 400, providerErrorCode: undefined });
+  }
+});
