@@ -62,7 +62,7 @@ async function readProviderErrorCode(body: Response["body"]) {
   }
 }
 
-export async function requestReviewJson(request: typeof fetch, endpoint: string, body: object, apiKey?: string, signal?: AbortSignal): Promise<unknown> {
+export async function requestReviewJson(request: typeof fetch, endpoint: string, body: object, apiKey?: string, signal?: AbortSignal, observeHeaders?: (headers: Headers) => void): Promise<unknown> {
   const timeout = AbortSignal.timeout(120_000);
   const networkFailure = () => new ReviewModelRequestError(timeout.aborted ? "model_timeout" : "model_network_error");
   let response: Response;
@@ -80,6 +80,7 @@ export async function requestReviewJson(request: typeof fetch, endpoint: string,
   } catch {
     throw networkFailure();
   }
+  observeHeaders?.(response.headers);
   if (!response.ok) {
     const status = response.status;
     const reason = status === 429 ? "model_rate_limited" :

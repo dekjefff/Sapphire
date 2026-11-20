@@ -40,9 +40,16 @@ export const modelReviewSchema = z.object({
   coverage_gaps: z.array(z.string().trim().min(1).max(240)).max(8),
 }).strict();
 
+export type ReviewMetrics = {
+  promptTokens?: number;
+  totalTokens?: number;
+  remainingTokens?: number;
+  resetAfterMs?: number;
+};
+
 export interface ReviewModel {
   readonly name: string;
-  review(data: string, signal?: AbortSignal): Promise<unknown>;
+  review(data: string, signal?: AbortSignal, observe?: (metrics: ReviewMetrics) => void): Promise<unknown>;
 }
 
 export type ModelFailureReason =

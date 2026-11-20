@@ -187,3 +187,14 @@ test("provider error code extraction ignores missing, unsafe, and oversized data
     await assert.rejects(model.review("{}"), { httpStatus: 400, providerErrorCode: undefined });
   }
 });
+
+test("Groq exposes numeric usage and token-window headers without altering the review JSON", async () => {
+  const metrics = [];
+  const answer = { findings: [], coverage_gaps: [] };
+  const model = groqReview("fixture", async () => Response.json({
+    usage: { prompt_tokens: 1100, total_tokens: 1250 },
+    choices: [{ finish_reason: "stop", message: { content: JSON.stringify(answer) } }],
+  }, { headers: { "x-ratelimit-remaining-tokens": "5300", "x-ratelimit-reset-tokens": "7.66s" } }));
+  assert.deepEqual(await model.review("{}", undefined, value => metrics.push(value)), answer);
+  assert.deepEqual(metrics, [{ remainingTokens: 5300, resetAfterMs: 7660 }, { promptTokens: 1100, totalTokens: 1250 }]);
+});

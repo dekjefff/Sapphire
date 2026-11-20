@@ -49,6 +49,7 @@ export type ProjectReviewReport = {
   coverage_gaps: string[];
   requests: number;
   estimated_tokens_reserved: number;
+  actual_tokens_reported?: number;
   reason: string | null;
   resume_at?: { file: string; line: number; incomplete: boolean };
   next_attempt_at?: string;
@@ -134,11 +135,14 @@ export async function reviewProjectSource(
     excluded_files: input.files.length - allFiles.length, reviewed_files: [...reviewed], pending_files: [],
     findings: [...(previous?.findings ?? [])], coverage_gaps: [...(previous?.coverage_gaps ?? [])],
     requests: previous?.requests ?? 0, estimated_tokens_reserved: previous?.estimated_tokens_reserved ?? 0,
+    actual_tokens_reported: previous?.actual_tokens_reported ?? 0,
     reason: null, resume_at: previous?.resume_at,
   };
   const requestLimit = report.requests + budget.requests;
   const tokenLimit = report.estimated_tokens_reserved + budget.estimatedTokens;
   const spend: { time: number; tokens: number }[] = [];
+  let observedPrompt: { bytes: number; tokens: number } | undefined;
+  let providerWindow: { remaining: number; expiresAt: number } | undefined;
   const findingKeys = new Set(report.findings.map(({ file, line, title }) => JSON.stringify([file, line, title])));
   function refresh() {
     report.pending_files = [...pending].map(([file, reason]) => ({ file, reason }));
@@ -154,7 +158,9 @@ export async function reviewProjectSource(
       if (report.requests >= requestLimit) return "request_budget";
       if (report.estimated_tokens_reserved + tokens > tokenLimit) return "token_budget";
       while (spend.length && now - spend[0].time >= 60_000) spend.shift();
-      if (spend.reduce((sum, item) => sum + item.tokens, tokens) <= minuteTokens) {
+      const fitsProvider = !providerWindow || now >= providerWindow.expiresAt || providerWindow.remaining >= tokens;
+      if (fitsProvider && spend.reduce((sum, item) => sum + item.tokens, tokens) <= minuteTokens) {
+        if (providerWindow && now < providerWindow.expiresAt) providerWindow.remaining -= tokens;
         spend.push({ time: now, tokens });
         report.requests++;
         report.estimated_tokens_reserved += tokens;
@@ -162,6 +168,14 @@ export async function reviewProjectSource(
       }
       await clock.wait(Math.min(1000, deadline - now));
     }
+  }
+
+  function estimateReservation(bytes: number) {
+    const fallback = bytes + promptOverhead;
+    const calibrated = observedPrompt
+      ? Math.ceil(observedPrompt.tokens * Math.max(1, bytes / observedPrompt.bytes) * 1.2) + 128
+      : fallback;
+    return Math.min(fallback, calibrated) + outputTokens;
   }
 
   async function pause(milliseconds: number) {
@@ -176,10 +190,14 @@ export async function reviewProjectSource(
     return null;
   }
 
-  async function askModel(payload: string, tokens: number, canSplit: boolean) {
+  async function askModel(payload: string, canSplit: boolean) {
+    const bytes = Buffer.byteLength(payload);
     for (let attempt = 1; attempt <= maxReviewAttempts; attempt++) {
+      const tokens = estimateReservation(bytes);
       const stop = await reserve(tokens);
       if (stop) return { stop, problem: null, data: null };
+      const reservation = spend.at(-1)!;
+      let settled = false;
       await controls.checkpoint(refresh());
       const cancellation = new AbortController();
       const poll = setInterval(() => {
@@ -189,7 +207,17 @@ export async function reviewProjectSource(
       }, 1000);
       let failure: ReviewModelRequestError | null = null;
       try {
-        const raw = await model.review(payload, AbortSignal.any([signal, cancellation.signal]));
+        const raw = await model.review(payload, AbortSignal.any([signal, cancellation.signal]), (metrics) => {
+          if (metrics.remainingTokens !== undefined && metrics.resetAfterMs !== undefined) {
+            providerWindow = { remaining: metrics.remainingTokens, expiresAt: clock.now() + metrics.resetAfterMs };
+          }
+          if (settled || !metrics.totalTokens || !metrics.promptTokens) return;
+          settled = true;
+          observedPrompt = { bytes, tokens: metrics.promptTokens };
+          reservation.tokens = metrics.totalTokens;
+          report.estimated_tokens_reserved += metrics.totalTokens - tokens;
+          report.actual_tokens_reported = (report.actual_tokens_reported ?? 0) + metrics.totalTokens;
+        });
         const parsed = modelReviewSchema.safeParse(raw);
         if (parsed.success) return { stop: null, problem: null, data: parsed.data };
         failure = new ReviewModelRequestError("model_invalid_response");
@@ -211,7 +239,7 @@ export async function reviewProjectSource(
       const retryable = failure.httpStatus === 400 ||
         (reason !== "model_authentication_failed" && reason !== "model_request_rejected" && reason !== "model_response_rejected");
       const retry = split || (retryable && attempt < maxReviewAttempts &&
-        report.requests < requestLimit && report.estimated_tokens_reserved + tokens <= tokenLimit);
+        report.requests < requestLimit && report.estimated_tokens_reserved + estimateReservation(bytes) <= tokenLimit);
       await controls.recordFailure?.({
         attempt, request_number: report.requests, reason,
         http_status: failure.httpStatus ?? null, provider_error_code: failure.providerErrorCode ?? null, retry_scheduled: retry,
@@ -265,8 +293,7 @@ export async function reviewProjectSource(
           const batch = batches.pop()!;
           report.resume_at = { file, line: batch.firstLine, incomplete: !complete };
           const payload = encode(batch.firstLine, batch.lines);
-          const result = await askModel(payload, Buffer.byteLength(payload) + promptOverhead + outputTokens,
-            batch.lines.length >= 8 && batch.depth < 2);
+          const result = await askModel(payload, batch.lines.length >= 8 && batch.depth < 2);
           if (result.split) {
             const mid = Math.floor(batch.lines.length / 2);
             const depth = batch.depth + 1;

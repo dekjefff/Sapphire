@@ -118,6 +118,8 @@ Temporary errors from Groq and the dependency scanner can trigger up to three re
 
 Groq reviews use low reasoning effort and request compact JSON. If Groq cannot finish or validate the JSON, the worker can split a source chunk and retry the smaller pieces within the same budget. If a piece still cannot be reviewed, its file stays incomplete and the worker continues with the remaining files.
 
+The worker reserves capacity before each request, then reconciles with Groq's reported token usage. It uses recent prompt usage to estimate the next request and checks the provider's remaining-token headers and Retry-After. If usage is unavailable, the original reservation remains charged.
+
 ## Stop and reset
 
 Stop containers while preserving database, queue, and artifact volumes:

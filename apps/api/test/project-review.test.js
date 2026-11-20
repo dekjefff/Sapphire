@@ -304,3 +304,38 @@ test("rate limit holds survive a processing window without resending before Retr
   assert.equal(Date.parse(result.next_attempt_at), 120_000);
   assert.equal(result.resume_at.line, 1);
 });
+
+test("reported usage releases unused reservations and allows four files through the same minute", async t => {
+  const input = await fixture(t);
+  const files = Array.from({ length: 4 }, (_, index) => `src/usage-${index}.ts`);
+  await Promise.all(files.map(file => writeFile(join(input.root, file), `export const text = "${"a".repeat(1800)}";`)));
+  const clock = virtualClock();
+  const attempts = [];
+  const result = await reviewProjectSource({ ...input, files, staticReport: firstPass }, {
+    name: "fixture",
+    async review(_payload, _signal, observe) {
+      attempts.push(clock.now());
+      observe({ promptTokens: 1000, totalTokens: 1200 });
+      return { findings: [], coverage_gaps: [] };
+    },
+  }, { ...controls, clock });
+  assert.deepEqual(attempts, [0, 0, 0, 0]);
+  assert.equal(result.actual_tokens_reported, 4800);
+  assert.equal(result.estimated_tokens_reserved, 4800);
+  assert.equal(result.reviewed_files.length, 4);
+});
+
+test("pacing waits when the provider reports insufficient tokens even if local usage fits", async t => {
+  const input = await fixture(t);
+  const clock = virtualClock();
+  const calls = [];
+  await reviewProjectSource({ ...input, staticReport: firstPass }, {
+    name: "fixture",
+    async review(_payload, _signal, observe) {
+      calls.push(clock.now());
+      observe({ promptTokens: 700, totalTokens: 900, remainingTokens: 100, resetAfterMs: 12_000 });
+      return { findings: [], coverage_gaps: [] };
+    },
+  }, { ...controls, clock });
+  assert.deepEqual(calls, [0, 12_000]);
+});
