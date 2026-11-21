@@ -4,6 +4,7 @@ import { useId, useState, type FormEvent, type SyntheticEvent } from 'react';
 import { fetchLatestPassiveCapture, importPassiveCapture } from '@/lib/api';
 import type { PassiveCapture, PassiveCaptureItem } from '@/lib/types';
 import styles from './passive-capture-panel.module.css';
+import { StatusPill } from './status-pill';
 
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const ITEM_REASONS = {
@@ -148,7 +149,7 @@ function CaptureResult({ capture }: { capture: PassiveCapture }) {
               <li key={`${event.at}-${index}`}>
                 <time dateTime={event.at}>{new Date(event.at).toLocaleString()}</time>
                 {' · '}
-                {event.status}
+                <StatusPill status={event.status} />
                 {event.error && ` · ${RUN_ERRORS[event.error]}`}
               </li>
             ))}

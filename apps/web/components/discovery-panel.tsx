@@ -4,6 +4,7 @@ import { useState, type SyntheticEvent } from 'react';
 import { API_URL, fetchAssessmentDetail } from '@/lib/api';
 import type { Assessment, DiscoveryMatch } from '@/lib/types';
 import styles from './assessment-card.module.css';
+import { StatusPill } from './status-pill';
 
 const REASONS: Record<string, string> = {
   route_matched: 'Runtime endpoint matched an identified source route.',
@@ -153,7 +154,10 @@ export function DiscoveryPanel({ assessmentId }: { assessmentId: string }) {
       {discovery && (
         <>
           <div className={styles.discoveryState}>
-            <strong>{stateLabels[discovery.state] ?? 'Discovery state unavailable'}</strong>
+            <StatusPill
+              status={discovery.state}
+              label={stateLabels[discovery.state] ?? 'Discovery state unavailable'}
+            />
             <span>
               {discovery.endpoint_count} endpoints · {discovery.match_count} route comparisons
             </span>
@@ -230,9 +234,8 @@ export function DiscoveryPanel({ assessmentId }: { assessmentId: string }) {
                 <article className={styles.discoveryRun} key={run.id}>
                   <div className={styles.groupHead}>
                     <strong>{run.tool}</strong>
-                    <span>
-                      {run.status} · {run.coverage_status}
-                    </span>
+                    <StatusPill status={run.status} />
+                    <StatusPill status={run.coverage_status} prefix="Coverage" />
                   </div>
                   <div className={styles.findingMeta}>
                     <span>Tool {run.tool_version ?? 'unknown'}</span>

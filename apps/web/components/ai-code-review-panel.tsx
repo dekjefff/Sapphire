@@ -7,6 +7,7 @@ import {
   type CodeReviewReport,
 } from '@/lib/code-review-report';
 import { ReviewFindings } from './review-findings';
+import { StatusPill } from './status-pill';
 import styles from './ai-code-review-panel.module.css';
 
 type ImportState =
@@ -17,7 +18,6 @@ type ImportState =
 const dependencyLabels = {
   clean: 'No advisories found',
   findings: 'Advisories found',
-  incomplete: 'Incomplete',
 };
 
 export function AiCodeReviewPanel() {
@@ -98,7 +98,11 @@ function ReviewResult({ fileName, report }: { fileName: string; report: CodeRevi
   return (
     <div className={styles.result}>
       <p className={styles.resultStatus} role="status">
-        <strong>{report.status === 'reviewed' ? 'Review completed' : 'Review incomplete'}</strong>
+        {report.status === 'reviewed' ? (
+          <strong>Review completed</strong>
+        ) : (
+          <StatusPill status="incomplete" label="Review incomplete" />
+        )}
         <span>{fileName}</span>
       </p>
       <dl className={styles.metadata}>
@@ -116,7 +120,13 @@ function ReviewResult({ fileName, report }: { fileName: string; report: CodeRevi
         <div>
           <dt>Dependency audit</dt>
           <dd>
-            {audit ? dependencyLabels[audit.status] : 'Unavailable'}
+            {audit?.status === 'incomplete' ? (
+              <StatusPill status="incomplete" />
+            ) : audit ? (
+              dependencyLabels[audit.status]
+            ) : (
+              'Unavailable'
+            )}
             {audit?.status === 'findings' && ` (${audit.finding_count})`}
           </dd>
           {audit?.reason && <dd>{audit.reason.replaceAll('_', ' ')}</dd>}

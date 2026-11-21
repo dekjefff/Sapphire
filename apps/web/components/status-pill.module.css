@@ -33,6 +33,24 @@
   --badge-border: #eedbb6;
 }
 
+.badge[data-tone='gray'] {
+  --badge-bg: #f2f2f2;
+  --badge-ink: #525252;
+  --badge-border: #d4d4d4;
+}
+
+.badge[data-tone='orange'] {
+  --badge-bg: #fff0e4;
+  --badge-ink: #9a4619;
+  --badge-border: #f5c9aa;
+}
+
+.badge[data-tone='yellow'] {
+  --badge-bg: #fff8d6;
+  --badge-ink: #735900;
+  --badge-border: #ebd67d;
+}
+
 .badge[data-tone='blue'] {
   --badge-bg: #edf5ff;
   --badge-ink: #496d9a;

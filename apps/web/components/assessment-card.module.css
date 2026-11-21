@@ -296,7 +296,10 @@
   border-radius: 6px;
   background: #f4f8f5;
 }
-.discoveryState span,
+.discoveryState > span:first-child {
+  white-space: normal;
+}
+.discoveryState > span:last-child,
 .discoveryRun .findingMeta {
   color: #839089;
 }
