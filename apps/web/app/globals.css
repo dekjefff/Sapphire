@@ -88,36 +88,29 @@ input[type='file']:not(:disabled)::file-selector-button {
   cursor: pointer;
 }
 
-.account-bar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  min-width: 0;
-  color: var(--color-muted);
-}
-
-.account-bar span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account-bar button {
+.sapphire-primary-button {
   min-height: 44px;
-  flex: none;
   padding: 8px 16px;
-  border: 1px solid var(--color-line);
+  border: 1px solid transparent;
   border-radius: var(--radius-control);
-  background: var(--color-white);
-  color: var(--color-ink);
-  font-weight: 600;
+  background: var(--color-green);
+  color: var(--color-white);
   cursor: pointer;
+  font-weight: 650;
 }
 
-.account-bar button:focus-visible {
+.sapphire-primary-button:hover:not(:disabled) {
+  background: var(--color-green-hover);
+}
+
+.sapphire-primary-button:focus-visible {
   outline: 2px solid var(--color-green);
   outline-offset: 2px;
+}
+
+.sapphire-primary-button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .sapphire-brand {

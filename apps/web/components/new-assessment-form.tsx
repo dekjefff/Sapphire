@@ -1,16 +1,24 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
-import type { AssessmentInput } from '@/lib/types';
+import { useEffect, useState, type FormEvent } from 'react';
+import type { AssessmentInput, ProjectReviewCatalog, ProjectReviewProvider } from '@/lib/types';
+import { fetchReviewModels } from '@/lib/api';
+import { normalizeUrl } from '@/lib/url-check';
+import { MatrixOrb } from './matrix-orb';
 import styles from './new-assessment-form.module.css';
 
 interface NewAssessmentFormProps {
-  reviewProvider: NonNullable<AssessmentInput['ai_review_provider']>;
   disabled: boolean;
   error: string;
   message: string;
   onCreate: (input: AssessmentInput) => Promise<void>;
 }
+
+const providerNames = { qwencloud: 'QwenCloud (Singapore)', groq: 'Groq' };
+const modelNames: Record<string, string> = {
+  'qwen3.7-flash': 'Qwen 3.7 Flash',
+  'openai/gpt-oss-20b': 'GPT OSS 20B',
+};
 
 const initialForm: AssessmentInput = {
   project_name: '',
@@ -20,20 +28,51 @@ const initialForm: AssessmentInput = {
   runtime_discovery_authorized: false,
 };
 
-export function NewAssessmentForm({
-  reviewProvider,
-  disabled,
-  error,
-  message,
-  onCreate,
-}: NewAssessmentFormProps) {
+export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAssessmentFormProps) {
   const [form, setForm] = useState(initialForm);
   const [step, setStep] = useState<'source' | 'runtime' | 'ai'>('source');
-  const [discoveryProfile, setDiscoveryProfile] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [uploadError, setUploadError] = useState('');
   const [draggingZip, setDraggingZip] = useState(false);
+  const [catalog, setCatalog] = useState<ProjectReviewCatalog | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<ProjectReviewProvider>();
+  const [consentedModel, setConsentedModel] = useState<string>();
+  const [modelError, setModelError] = useState('');
+  const [modelRetry, setModelRetry] = useState(0);
+  const model =
+    catalog?.models.find((entry) => entry.available && entry.provider === selectedProvider) ??
+    catalog?.models.find((entry) => entry.available && entry.provider === catalog.preferred) ??
+    catalog?.models.find((entry) => entry.available);
+
+  const modelIdentity = model ? model.provider + ':' + model.model : undefined;
+  const sharingApproved = Boolean(modelIdentity && consentedModel === modelIdentity);
+
+  useEffect(() => {
+    if (step !== 'ai') return;
+    const controller = new AbortController();
+    void fetchReviewModels(controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) {
+          setCatalog(result);
+          setModelError('');
+        }
+      })
+      .catch((cause: unknown) => {
+        if (!controller.signal.aborted) {
+          setCatalog(null);
+          setModelError(cause instanceof Error ? cause.message : 'Could not load review models.');
+        }
+      });
+    return () => controller.abort();
+  }, [step, modelRetry]);
+
   const labOrigin = 'http://juiceshop:3000';
+  let isLabUrl = false;
+  try {
+    isLabUrl = normalizeUrl(form.target_url) === labOrigin + '/';
+  } catch {
+    // The editable field may be empty or incomplete.
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -44,24 +83,19 @@ export function NewAssessmentForm({
       return;
     }
 
-    if (disabled) return;
     const runtime = step === 'runtime';
+    if (disabled || (runtime && (!isLabUrl || !form.runtime_discovery_authorized))) return;
     const ai = step === 'ai' && form.source_type === 'zip';
-    if (
-      runtime &&
-      (!discoveryProfile || !form.runtime_discovery_authorized || form.target_url !== labOrigin)
-    )
-      return;
-    if (step === 'ai' && (!ai || !form.ai_review_authorized)) return;
+    if (step === 'ai' && (!ai || !sharingApproved)) return;
 
     setSubmitting(true);
     try {
       await onCreate({
         ...form,
-        target_url: runtime ? form.target_url : ai ? '' : labOrigin,
+        target_url: ai ? '' : labOrigin,
         runtime_discovery_authorized: runtime,
         ai_review_authorized: ai,
-        ai_review_provider: ai ? reviewProvider : undefined,
+        ai_review_provider: ai ? model?.provider : undefined,
       });
     } finally {
       setSubmitting(false);
@@ -70,6 +104,7 @@ export function NewAssessmentForm({
 
   function backToSource() {
     setForm({ ...form, runtime_discovery_authorized: false, ai_review_authorized: false });
+    setConsentedModel(undefined);
     setStep('source');
   }
 
@@ -242,69 +277,129 @@ export function NewAssessmentForm({
         {step === 'runtime' && (
           <fieldset className={styles.fields} disabled={submitting}>
             <label>
-              Runtime discovery profile
-              <select
+              Target URL
+              <input
+                type="url"
+                placeholder="http://juiceshop:3000"
                 required
-                value={discoveryProfile}
+                value={form.target_url}
+                aria-describedby="runtime-url-help"
                 onChange={(event) => {
-                  const profile = event.target.value;
-                  setDiscoveryProfile(profile);
                   setForm({
                     ...form,
-                    target_url: profile ? labOrigin : '',
+                    target_url: event.target.value,
                     runtime_discovery_authorized: false,
                   });
                 }}
-              >
-                <option value="">Choose a profile</option>
-                <option value="juiceshop">Isolated local Juice Shop</option>
-              </select>
-              <span className={styles.guidance}>
-                This profile uses bounded, read-only discovery on the configured local origin.
+              />
+              <span className={styles.guidance} id="runtime-url-help">
+                Runtime discovery is available for the local Juice Shop at http://juiceshop:3000.
               </span>
             </label>
-            {discoveryProfile && (
-              <label>
-                Target URL
-                <input type="url" value={form.target_url} readOnly />
+            {form.target_url.trim() && !isLabUrl && (
+              <p className={styles.error} role="status">
+                This URL is outside the configured discovery scope.
+              </p>
+            )}
+            {isLabUrl && (
+              <label className={styles.attestation}>
+                <input
+                  type="checkbox"
+                  required
+                  checked={form.runtime_discovery_authorized}
+                  onChange={(event) =>
+                    setForm({ ...form, runtime_discovery_authorized: event.target.checked })
+                  }
+                />
+                <span>I am authorized to run read-only discovery on this local Juice Shop.</span>
               </label>
             )}
-            <label className={styles.attestation}>
-              <input
-                type="checkbox"
-                required
-                checked={form.runtime_discovery_authorized}
-                disabled={!discoveryProfile}
-                onChange={(event) =>
-                  setForm({ ...form, runtime_discovery_authorized: event.target.checked })
-                }
-              />
-              <span>
-                I am authorized to run bounded discovery against this exact isolated local origin.
-              </span>
-            </label>
           </fieldset>
         )}
         {step === 'ai' && (
           <>
-            <p className={styles.guidance}>
-              Review what source data is sent to the configured AI provider before continuing.
-            </p>
+            <fieldset className={styles.modelPicker}>
+              <legend>Choose a model</legend>
+              {!catalog && !modelError && (
+                <p role="status" className={styles.guidance}>
+                  Loading available models…
+                </p>
+              )}
+              {modelError && (
+                <div className={styles.notice} role="alert">
+                  <p>{modelError}</p>
+                  <button
+                    className={styles.secondaryButton}
+                    type="button"
+                    onClick={() => setModelRetry((attempt) => attempt + 1)}
+                  >
+                    Retry
+                  </button>
+                </div>
+              )}
+              <div className={styles.modelOptions}>
+                {catalog?.models.map((entry) => {
+                  const selected = entry.provider === model?.provider;
+                  return (
+                    <label
+                      className={styles.modelOption}
+                      key={entry.provider}
+                      data-available={entry.available}
+                    >
+                      <span className={styles.orbStage} aria-hidden="true">
+                        <MatrixOrb
+                          color={entry.provider === 'qwencloud' ? '#49d48b' : '#f75001'}
+                          size={148}
+                          state={selected ? (submitting ? 'thinking' : 'listening') : 'idle'}
+                          animated={selected && entry.available}
+                        />
+                      </span>
+                      <span className={styles.modelRow}>
+                        <span className={styles.modelMeta}>
+                          <strong className={styles.modelName}>
+                            {modelNames[entry.model] ?? entry.model}
+                          </strong>
+                          <span className={styles.modelProvider}>
+                            {providerNames[entry.provider]}
+                          </span>
+                          {!entry.available && (
+                            <span className={styles.modelProvider}>API key not configured</span>
+                          )}
+                        </span>
+                        <input
+                          className={styles.modelRadio}
+                          type="radio"
+                          name="review-model"
+                          value={entry.provider}
+                          checked={selected}
+                          disabled={submitting || !entry.available}
+                          onChange={() => {
+                            setSelectedProvider(entry.provider);
+                            setConsentedModel(undefined);
+                          }}
+                        />
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </fieldset>
             <label className={styles.attestation}>
               <input
                 type="checkbox"
                 required
-                disabled={submitting}
-                checked={form.ai_review_authorized === true}
+                disabled={submitting || !model}
+                checked={sharingApproved}
                 onChange={(event) =>
-                  setForm({ ...form, ai_review_authorized: event.target.checked })
+                  setConsentedModel(event.target.checked ? modelIdentity : undefined)
                 }
               />
               <span>
                 I approve sending supported project source files and scanner summaries to{' '}
-                {reviewProvider === 'qwencloud' ? 'QwenCloud (Singapore)' : 'Groq'} and saving the
-                report with this assessment. Sapphire may keep a temporary copy of the ZIP for up to
-                48 hours so the review can continue across processing windows.
+                {model ? providerNames[model.provider] : 'the selected provider'}
+                {model && <> using {model.model}</>} and saving the report with this assessment.
+                Sapphire may keep a temporary copy of the ZIP for up to 48 hours so the review can
+                continue across processing windows.
               </span>
             </label>
           </>
@@ -364,7 +459,12 @@ export function NewAssessmentForm({
               <button
                 className={styles.primaryButton}
                 type="submit"
-                disabled={submitting || disabled}
+                disabled={
+                  submitting ||
+                  disabled ||
+                  (step === 'ai' && !sharingApproved) ||
+                  (step === 'runtime' && (!isLabUrl || !form.runtime_discovery_authorized))
+                }
               >
                 {submitting
                   ? 'Creating…'

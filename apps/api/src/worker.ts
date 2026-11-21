@@ -449,7 +449,7 @@ async function processJob(raw: string): Promise<void> {
       if (message.source_type === "zip") await rm(message.source_path, { force: true }).catch(() => undefined);
       return;
     }
-    await client.query("UPDATE projects SET source_location=$2,source_identity_type=$3,source_identity=$4,source_file_count=$5,source_total_bytes=$6,intake_status='completed' WHERE id=$1", [projectId, source.canonicalLocation, source.identityType, source.identity, source.fileCount, source.totalBytes]);
+    await client.query("UPDATE projects SET source_location=$2,source_identity_type=$3,source_identity=$4,source_file_count=$5,source_total_bytes=$6,source_languages=$7,intake_status='completed' WHERE id=$1", [projectId, source.canonicalLocation, source.identityType, source.identity, source.fileCount, source.totalBytes, JSON.stringify(source.sourceLanguages)]);
     for (const tech of source.technologies) await client.query("INSERT INTO detected_technologies (assessment_id,name,category,confidence,evidence,reason) VALUES ($1,$2,$3,$4,$5,$6)", [assessmentId, tech.name, tech.category, tech.confidence, JSON.stringify(tech.evidence), tech.reason]);
     for (const route of source.routes) await client.query("INSERT INTO discovered_routes (assessment_id,method,path,source_file,source_line,confidence) VALUES ($1,$2,$3,$4,$5,$6)", [assessmentId, route.method, route.path, route.file, route.line, route.confidence]);
     for (const finding of source.findings) await client.query("INSERT INTO intake_findings (assessment_id,severity,code,message) VALUES ($1,$2,$3,$4)", [assessmentId, finding.severity, finding.code, finding.message]);

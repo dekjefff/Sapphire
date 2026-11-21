@@ -5,6 +5,8 @@ import type {
   HealthResponse,
   PassiveCapture,
   ProjectReviewDetail,
+  ProjectReviewCatalog,
+  WorkspaceOverview,
 } from './types';
 
 export const API_URL = '/api';
@@ -49,6 +51,9 @@ export function submitAssessment(input: AssessmentInput): Promise<AssessmentCrea
     if (input.target_url) body.append('target_url', input.target_url);
     body.append('runtime_discovery_authorized', String(input.runtime_discovery_authorized));
     body.append('ai_review_authorized', String(input.ai_review_authorized === true));
+    if (input.ai_review_authorized && input.ai_review_provider) {
+      body.append('ai_review_provider', input.ai_review_provider);
+    }
     if (input.source_file) body.append('source', input.source_file);
     return request<AssessmentCreated>('/assessments/zip', { method: 'POST', body });
   }
@@ -91,4 +96,19 @@ export function importPassiveCapture(id: string, body: string): Promise<PassiveC
 
 export function fetchProjectReview(id: string): Promise<{ review: ProjectReviewDetail | null }> {
   return request(`/assessments/${encodeURIComponent(id)}/project-code-review`);
+}
+
+export function controlProjectReview(id: string, action: 'pause' | 'resume' | 'stop') {
+  return request<{ accepted: true }>(
+    `/assessments/${encodeURIComponent(id)}/project-code-review/${action}`,
+    { method: 'POST' },
+  );
+}
+
+export function fetchWorkspaceOverview(signal?: AbortSignal) {
+  return request<WorkspaceOverview>('/workspace/overview', { signal });
+}
+
+export function fetchReviewModels(signal?: AbortSignal) {
+  return request<ProjectReviewCatalog>('/workspace/review-models', { signal });
 }

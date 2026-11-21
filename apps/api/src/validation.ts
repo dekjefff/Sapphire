@@ -17,6 +17,7 @@ export const createZipAssessmentSchema = z.object({
   target_url: z.url().max(2048).optional(),
   runtime_discovery_authorized: discoveryAttestation,
   ai_review_authorized: discoveryAttestation,
+  ai_review_provider: z.enum(["groq", "qwencloud"]).optional(),
 }).strict().refine(
   (input) => Boolean(input.target_url) || (input.ai_review_authorized === true && input.runtime_discovery_authorized !== true),
   { path: ["target_url"], message: "A target URL is required unless this is a source-only AI review" },

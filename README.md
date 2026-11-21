@@ -5,7 +5,7 @@ Sapphire is a local-first tool for authorized web application assessments. The f
 ## Requirements
 
 - Docker Desktop with Docker Compose v2, or Docker Engine with the Compose plugin
-- Ports 8080 and 8180 available on localhost. Set `WEB_PORT` and `SAPPHIRE_IDENTITY_PORT` in `.env` to change them.
+- Port 8080 available on localhost. Set `WEB_PORT` in `.env` to change it.
 - Internet access the first time images and the web build dependencies are downloaded
 
 ## Start
@@ -20,22 +20,20 @@ On macOS/Linux, use `cp .env.example .env`. Then follow [Account sign-in and reg
 
 ## Account sign-in and registration
 
-Sapphire opens to **Sign in** until an operator has a valid session. [Auth.js](https://authjs.dev/getting-started) manages Sapphire sessions and [Keycloak](https://www.keycloak.org/) handles sign-in, registration, and passwords. The web service checks the session before serving the dashboard or forwarding same-origin `/api` requests. The backend API and database are reachable only inside Docker. Operators share one workspace.
+Sapphire manages its own operator accounts and uses Auth.js for session cookies. Operators share one workspace. The web service requires a session for the dashboard and for same-origin API requests. The assessment API and database are reachable only inside Docker.
 
-1. Add these values to your ignored `.env` file. Generate two independent secrets with `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"`, and use a separate strong password for the Keycloak administrator.
+1. Set independent random values for the session secret and setup code in the ignored `.env` file. Run `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"` once for each value.
 
    ```dotenv
    SAPPHIRE_AUTH_SECRET=<generated-session-secret>
-   SAPPHIRE_OIDC_CLIENT_SECRET=<generated-oidc-client-secret>
-   SAPPHIRE_IDENTITY_ADMIN_PASSWORD=<administrator-password>
+   SAPPHIRE_AUTH_SETUP_CODE=<generated-one-time-setup-code>
    ```
 
-2. If an earlier Sapphire proxy is running, stop it to free port 8080.
-3. Run `docker compose -f compose.yaml -f compose.authjs.yaml up --build -d`. Use the same pair of Compose files for subsequent commands in this mode.
-4. Open `http://localhost:8080`, choose **Sign in or register**, then use **Register** on the Keycloak page. Use the `localhost` URLs consistently for the registered OpenID Connect callback.
-5. Sign in to the Keycloak admin console at `http://localhost:8180/admin/` with the bootstrap administrator (`admin` by default). Select realm **sapphire**, open the new user, and assign the realm role **operator** under **Role mapping**. The user can then sign in to Sapphire and sign out from the dashboard.
+2. Start Sapphire with `docker compose up --build -d` and open `http://localhost:8080`.
+3. Choose **Register** and enter the setup code with your new account details. Use a password of at least 12 characters. Registration consumes the setup code once. To enroll another operator, set a fresh code and run `docker compose up -d web`.
+4. Sign in using the new account. Keep using the configured `localhost` URL so that browser requests have the expected origin.
 
-The Compose setup runs Keycloak in development mode on loopback. Configure SMTP in the **sapphire** realm before relying on password reset or enabling email verification. Keycloak stores accounts in the `identity_data` volume and imports the realm only when it is absent. Role changes are picked up on the next sign-in. Auth.js sessions expire within one hour. Use the Auth.js configuration for the dashboard when migrating from Caddy Basic login.
+Passwords are salted and hashed with scrypt. Account data survives restarts in the `sapphire_auth_data` volume. Sessions expire after one hour. Existing external identity accounts must register a Sapphire account. Assessment data stays in its existing volumes.
 
 ## Configure the source workspace
 
@@ -108,11 +106,11 @@ Retrieve redacted findings from `GET /assessments/<assessment-id>/zap-report/fin
 
 ## AI Code Review
 
-Configure `GROQ_API_KEY` in the local Compose environment. For the Auth.js deployment, also set a random `SAPPHIRE_AI_REVIEW_PROXY_TOKEN` for the web and API containers to share. Keep both values out of Git.
+Project AI Code Review defaults to QwenCloud (Singapore) with `qwen3.7-flash`. Set `DASHSCOPE_API_KEY` (or `QWEN_API_KEY`) in the ignored `.env` file. Set `GROQ_API_KEY` to offer Groq as an alternative in the model picker. Set `SAPPHIRE_PROJECT_REVIEW_PROVIDER=groq` to make Groq the preferred option. Each queued review keeps the provider confirmed at submission. Set a random `SAPPHIRE_AI_REVIEW_PROXY_TOKEN` for the web and API to share.
 
 From the authenticated Dashboard, upload the project ZIP and choose **Include AI Code Review** when creating the assessment. The static worker runs Semgrep and Trivy, saves a JSON summary bound to the source fingerprint, and queues the review on the same assessment. The model reviews supported source files based on the ZIP inventory, including files with no scanner findings. Static or intake gaps remain visible as first-pass limitations.
 
-The separate `project-reviewer` service checks the fingerprint before sending batches to Groq. Each processing window allows up to 40 requests, 200,000 conservatively estimated token reservations, and 30 minutes. The same assessment automatically resumes from its saved source line across windows. Provider limits and Retry-After still apply. The total project limit is 48 hours from consent, 1,200 requests, and 6 million estimated token reservations. The temporary ZIP is removed after the review is finalized, cancelled, or expires. Open **AI Code Review** on the assessment to see progress, findings and remaining files. The CLI report viewer remains available for reports created outside this workflow.
+The separate `project-reviewer` service checks the fingerprint before sending batches to the selected provider. Each processing window allows up to 40 requests, 200,000 conservatively estimated token reservations, and 30 minutes. The same assessment automatically resumes from its saved source line across windows. Provider limits and Retry-After still apply. The total project limit is 48 hours from consent, 1,200 requests, and 6 million estimated token reservations. The temporary ZIP is removed after the review is finalized, cancelled, or expires. Open **AI Code Review** on the assessment to see progress, findings and remaining files. The CLI report viewer remains available for reports created outside this workflow.
 
 Temporary errors from Groq and the dependency scanner can trigger up to three retries after the first attempt. Project reviews also retry Groq HTTP 400 responses. Each Groq attempt counts against the assessment budget. The backend records safe error categories, attempt numbers, HTTP statuses, and the provider's machine-readable error code when available. Provider messages and response bodies are discarded. If the review remains incomplete, the dashboard shows saved findings and coverage gaps with user-facing messages.
 
@@ -146,7 +144,7 @@ The default PostgreSQL password is for local development only. Set `POSTGRES_PAS
 - `discovery-gateway`: network boundary enforcing pinned destination and path policy for the discovery runner
 - `samples/security-scan-fixture`: intentionally vulnerable test-only fixture for scanner validation; never install or execute it
 - PostgreSQL: projects, assessments, intake data, detected technologies/routes, tool definitions/runs, scan artifacts, normalized findings/groups, audit events, and Flyway-managed schema history
-- Flyway `12.11.0` applies migrations through `V9__passive_capture_evidence.sql` before the API and worker start. The `flyway_schema_history` table records migration state.
+- Flyway `12.11.0` applies migrations through `V13__source_language_breakdown.sql` before the API and worker start. The `flyway_schema_history` table records migration state.
 - Redis: persistent queue volume
 - `intake` named volume: staged ZIP files and temporary extraction space shared by API/worker
 - `artifacts` named volume: raw JSON/SARIF scanner artifacts and metadata sidecars

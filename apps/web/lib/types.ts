@@ -53,7 +53,7 @@ export interface AssessmentInput {
   source_file?: File;
   runtime_discovery_authorized: boolean;
   ai_review_authorized?: boolean;
-  ai_review_provider?: "groq" | "qwencloud";
+  ai_review_provider?: 'groq' | 'qwencloud';
 }
 
 export type ProjectReviewStatus =
@@ -61,11 +61,18 @@ export type ProjectReviewStatus =
 
 export interface ProjectReviewSummary {
   status: ProjectReviewStatus;
+  pause_requested: boolean;
+  cancel_requested: boolean;
   reason: string | null;
   updated_at: string;
   total_files: number | null;
   reviewed_files: number | null;
   findings: number | null;
+}
+
+export interface SourceEvidenceContext {
+  first_line: number;
+  lines: string[];
 }
 
 export interface ProjectReviewDetail {
@@ -91,6 +98,7 @@ export interface ProjectReviewDetail {
       evidence: string;
       remediation: string;
       related_static_finding_ids: string[];
+      evidence_context?: SourceEvidenceContext;
     }[];
     coverage_gaps: string[];
   } | null;
@@ -116,6 +124,7 @@ export interface Assessment {
   source_total_bytes?: number | null;
   intake_status: 'pending' | 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   route_count?: number;
+  source_languages?: { name: string; bytes: number }[] | null;
   technologies?: { name: string; category: string; confidence: number; evidence: string[] }[];
   routes?: {
     method: string;
@@ -268,4 +277,30 @@ export interface DiscoveryMatch {
     scope_policy_sha256?: string;
     source_route_id?: string;
   };
+}
+
+export interface WorkspaceOverview {
+  totals: {
+    projects_scanned: number;
+    scans: number;
+    scan_seconds: number;
+    assessments: number;
+    findings: number;
+    critical: number;
+    high: number;
+    reviews: number;
+    reviews_completed: number;
+    tokens: number;
+    ai_requests: number;
+    tokens_without_day: number;
+  };
+  days: { date: string; scans: number; tokens: number }[];
+  time_zone: string;
+}
+
+export type ProjectReviewProvider = NonNullable<AssessmentInput['ai_review_provider']>;
+
+export interface ProjectReviewCatalog {
+  preferred: ProjectReviewProvider;
+  models: { provider: ProjectReviewProvider; model: string; available: boolean }[];
 }

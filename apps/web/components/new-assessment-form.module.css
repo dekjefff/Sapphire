@@ -137,7 +137,7 @@
   font-weight: 650;
 }
 
-.panel input:not([type='checkbox'], [type='file']),
+.panel input:not([type='checkbox'], [type='file'], [type='radio']),
 .panel select {
   width: 100%;
   min-height: 44px;
@@ -150,7 +150,7 @@
   font-weight: 400;
 }
 
-.panel input:not([type='checkbox'], [type='file']):focus,
+.panel input:not([type='checkbox'], [type='file'], [type='radio']):focus,
 .panel select:focus {
   outline: 2px solid var(--color-green-accent);
   outline-offset: 1px;
@@ -308,5 +308,103 @@
 
   .actions > button {
     flex: 1 1 100%;
+  }
+}
+
+.modelPicker {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.modelPicker legend {
+  margin-bottom: 12px;
+  font-weight: 650;
+}
+
+.modelOptions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.panel .modelOption {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--color-line);
+  border-radius: 12px;
+  background: var(--color-white);
+  cursor: pointer;
+}
+
+.panel .modelOption:has(.modelRadio:checked) {
+  border-color: var(--color-green);
+  background: var(--color-green-pale);
+}
+
+.panel .modelOption:has(.modelRadio:focus-visible) {
+  outline: 2px solid var(--color-green);
+  outline-offset: 2px;
+}
+
+.panel .modelOption[data-available='false'] {
+  cursor: default;
+}
+
+.modelOption[data-available='false'] .orbStage {
+  opacity: 0.55;
+}
+
+.orbStage {
+  display: grid;
+  min-width: 0;
+  min-height: 148px;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #141414;
+}
+
+.modelRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 4px;
+}
+
+.modelMeta {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.modelName {
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.modelProvider {
+  color: var(--color-muted);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.modelRadio {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin: 2px 0 0;
+  accent-color: var(--color-green);
+}
+
+@media (max-width: 460px) {
+  .modelOptions {
+    grid-template-columns: 1fr;
   }
 }

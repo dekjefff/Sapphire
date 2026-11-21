@@ -3,7 +3,11 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { modelReviewSchema, ReviewModelRequestError, type ReviewModel } from "./code-review.js";
 import { maxReviewAttempts, reviewBackoffMs } from "./review-retry.js";
+import { evidenceContext, type EvidenceContext } from "./review-evidence-context.js";
 
+const activityDate = new Intl.DateTimeFormat("sv-SE", {
+  timeZone: "Asia/Bangkok", year: "numeric", month: "2-digit", day: "2-digit",
+});
 const sourceExtension = /\.(?:[cm]?[jt]sx?|py|go|java|cs|rs|rb|php|c|h|cpp|swift|kt|scala|vue|svelte|sql)$/i;
 const maxFileBytes = 256 * 1024;
 const maxPayloadBytes = 4400;
@@ -28,6 +32,7 @@ export type ScannerReport = {
 type Finding = {
   file: string; line: number; severity: string; title: string; remediation: string; evidence: string;
   related_static_finding_ids: string[];
+  evidence_context?: EvidenceContext;
 };
 type FileResult = { file: string; reason: string };
 export type ModelAttemptFailure = {
@@ -50,6 +55,7 @@ export type ProjectReviewReport = {
   requests: number;
   estimated_tokens_reserved: number;
   actual_tokens_reported?: number;
+  actual_tokens_by_day?: Record<string, number>;
   reason: string | null;
   resume_at?: { file: string; line: number; incomplete: boolean };
   next_attempt_at?: string;
@@ -133,9 +139,10 @@ export async function reviewProjectSource(
   const report: ProjectReviewReport = {
     schema_version: 1, model: model.name, total_files: allFiles.length,
     excluded_files: input.files.length - allFiles.length, reviewed_files: [...reviewed], pending_files: [],
-    findings: [...(previous?.findings ?? [])], coverage_gaps: [...(previous?.coverage_gaps ?? [])],
+    findings: (previous?.findings ?? []).map((finding) => ({ ...finding })), coverage_gaps: [...(previous?.coverage_gaps ?? [])],
     requests: previous?.requests ?? 0, estimated_tokens_reserved: previous?.estimated_tokens_reserved ?? 0,
     actual_tokens_reported: previous?.actual_tokens_reported ?? 0,
+    actual_tokens_by_day: { ...previous?.actual_tokens_by_day },
     reason: null, resume_at: previous?.resume_at,
   };
   const requestLimit = report.requests + budget.requests;
@@ -147,6 +154,25 @@ export async function reviewProjectSource(
   function refresh() {
     report.pending_files = [...pending].map(([file, reason]) => ({ file, reason }));
     return report;
+  }
+  // Older checkpoints only stored one line. Restore context from the same verified snapshot.
+  const available = new Set(allFiles);
+  const missing = new Map<string, Finding[]>();
+  for (const finding of report.findings) {
+    if (finding.evidence_context || !available.has(finding.file)) continue;
+    const list = missing.get(finding.file) ?? [];
+    list.push(finding);
+    missing.set(finding.file, list);
+  }
+  for (const [file, findings] of missing) {
+    if (await controls.cancelled() || clock.now() >= deadline) break;
+    let lines: string[];
+    try { lines = await readSource(root, file); } catch { continue; }
+    for (const finding of findings) {
+      if (lines[finding.line - 1]?.trim().slice(0, 500) === finding.evidence) {
+        finding.evidence_context = evidenceContext(lines, finding.line);
+      }
+    }
   }
   await controls.checkpoint(refresh());
 
@@ -217,6 +243,9 @@ export async function reviewProjectSource(
           reservation.tokens = metrics.totalTokens;
           report.estimated_tokens_reserved += metrics.totalTokens - tokens;
           report.actual_tokens_reported = (report.actual_tokens_reported ?? 0) + metrics.totalTokens;
+          const day = activityDate.format(clock.now());
+          const byDay = report.actual_tokens_by_day!;
+          byDay[day] = (byDay[day] ?? 0) + metrics.totalTokens;
         });
         const parsed = modelReviewSchema.safeParse(raw);
         if (parsed.success) return { stop: null, problem: null, data: parsed.data };
@@ -317,6 +346,7 @@ export async function reviewProjectSource(
             findingKeys.add(key);
             report.findings.push({
               ...finding, evidence: evidence.slice(0, 500),
+              evidence_context: evidenceContext(lines, finding.line),
               related_static_finding_ids: staticFindings.filter((hint) => hint.line === finding.line).slice(0, 10).map((hint) => hint.id),
             });
           }
@@ -340,8 +370,11 @@ export async function reviewProjectSource(
     await controls.checkpoint(refresh());
   }
   if (report.reason) {
-    for (const [file, reason] of pending) {
-      if (reason === "not_started" || reason === "partially_reviewed") pending.set(file, report.reason);
+    // An interrupted slice may resume. Keep its pending file states and source cursor.
+    if (report.reason !== "cancelled") {
+      for (const [file, reason] of pending) {
+        if (reason === "not_started" || reason === "partially_reviewed") pending.set(file, report.reason);
+      }
     }
   } else if (!report.total_files) report.reason = "no_supported_source_files";
   else if (pending.size) report.reason = "file_coverage_incomplete";

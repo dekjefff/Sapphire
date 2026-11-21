@@ -63,6 +63,7 @@ export function registerDashboardCodeReview(app: FastifyInstance, options: {
   requireProxy?: boolean;
   proxyToken?: string;
   projectReview?: (assessmentId: string) => Promise<unknown>;
+  controlProjectReview?: (assessmentId: string, action: "pause" | "resume" | "stop") => Promise<boolean>;
   store: ReviewStore;
   run?: (input: ReviewInput) => Promise<Report>;
 }) {
@@ -94,6 +95,24 @@ export function registerDashboardCodeReview(app: FastifyInstance, options: {
       reply.header("Cache-Control", "no-store");
       return { review: await getProjectReview(id) };
     });
+  }
+
+  const controlProjectReview = options.controlProjectReview;
+  if (controlProjectReview) {
+    app.post<{ Params: { assessment_id: string; action: string } }>(
+      "/assessments/:assessment_id/project-code-review/:action", dashboardOnly, async (request, reply) => {
+        const { assessment_id: id, action } = request.params;
+        if (!isUuid(id)) return reply.code(400).send({ detail: "Assessment ID is invalid" });
+        if (action !== "pause" && action !== "resume" && action !== "stop") {
+          return reply.code(404).send({ detail: "Unknown AI review action" });
+        }
+        if (!(await controlProjectReview(id, action))) {
+          return reply.code(409).send({ detail: "This review is no longer in a state that supports this action." });
+        }
+        reply.header("Cache-Control", "no-store");
+        return { accepted: true };
+      },
+    );
   }
 
   app.get<{ Params: { assessment_id: string } }>(path, dashboardOnly, async (request, reply) => {

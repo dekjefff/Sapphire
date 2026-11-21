@@ -1,3 +1,5 @@
+import type { SourceEvidenceContext } from './types';
+
 const severities = ['info', 'low', 'moderate', 'high', 'critical'] as const;
 const dependencyStatuses = ['clean', 'findings', 'incomplete'] as const;
 
@@ -7,6 +9,7 @@ type Finding = {
   severity: (typeof severities)[number];
   title: string;
   evidence: string;
+  evidence_context?: SourceEvidenceContext;
   remediation: string;
 };
 
@@ -64,6 +67,25 @@ function isDependencyAudit(value: unknown): value is DependencyAudit {
   );
 }
 
+function isEvidenceContext(value: unknown, line: number, evidence: string) {
+  if (!isObject(value) || !isInteger(value.first_line, 1) || !Array.isArray(value.lines)) {
+    return false;
+  }
+  const lines: unknown[] = value.lines;
+  if (
+    lines.length < 2 ||
+    lines.length > 41 ||
+    !lines.every((text) => typeof text === 'string' && text.length <= 4000 && !/[\r\n]/.test(text))
+  ) {
+    return false;
+  }
+  const sourceLines = lines as string[];
+  return (
+    sourceLines.join('\n').length <= 4000 &&
+    sourceLines[line - (value.first_line as number)]?.trim().slice(0, 500) === evidence
+  );
+}
+
 function isFinding(value: unknown): value is Finding {
   return (
     isObject(value) &&
@@ -72,6 +94,8 @@ function isFinding(value: unknown): value is Finding {
     isOneOf(value.severity, severities) &&
     isText(value.title, 180) &&
     isText(value.evidence, 500) &&
+    (value.evidence_context === undefined ||
+      isEvidenceContext(value.evidence_context, value.line as number, value.evidence)) &&
     isText(value.remediation, 600)
   );
 }

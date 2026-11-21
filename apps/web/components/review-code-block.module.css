@@ -1,0 +1,145 @@
+.block {
+  --code-bg: #222324;
+  --code-line: #353739;
+  --code-text: #e0e1e3;
+  --code-muted: #a2a7ad;
+  --code-font: ui-monospace, 'Cascadia Code', Consolas, monospace;
+  min-width: 0;
+  margin-top: 12px;
+  overflow: hidden;
+  border: 1px solid var(--code-line);
+  border-radius: 12px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  color-scheme: dark;
+}
+
+.header {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px 4px 16px;
+  border-bottom: 1px solid var(--code-line);
+}
+
+.filename {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--code-font);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.filename svg {
+  flex-shrink: 0;
+  color: var(--code-muted);
+}
+
+.filename > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy {
+  display: inline-flex;
+  min-height: 32px;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--code-muted);
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.copy:hover,
+.copy:focus-visible {
+  background: #303335;
+  color: var(--code-text);
+}
+
+.copy:focus-visible {
+  outline: 2px solid #90c9ff;
+  outline-offset: 1px;
+}
+
+.copy[data-status='copied'] {
+  color: #82d0a4;
+}
+
+.announcement {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.body {
+  margin: 0;
+  padding: 11px 0 12px;
+  max-height: 420px;
+  overflow-y: auto;
+  font-family: var(--code-font);
+  font-size: 12.5px;
+  line-height: 1.7;
+  text-align: start;
+  white-space: pre-wrap;
+  tab-size: 2;
+}
+
+.body code {
+  font: inherit;
+}
+
+.line {
+  display: grid;
+  grid-template-columns: minmax(30px, max-content) minmax(0, 1fr);
+}
+
+.line[data-cited] {
+  background: #273640;
+}
+
+.line[data-cited] .number {
+  border-inline-start: 2px solid #8cc7ff;
+  color: #c6e5ff;
+}
+
+.number {
+  border-inline-start: 2px solid transparent;
+  padding: 0 8px;
+  border-inline-end: 1px solid var(--code-line);
+  color: var(--code-muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: end;
+  user-select: none;
+}
+
+.source {
+  min-width: 0;
+  padding: 0 12px 0 8px;
+  overflow-wrap: anywhere;
+}
+
+.keyword {
+  color: #8cc7ff;
+}
+.literal {
+  color: #f3a767;
+}
+.functionName {
+  color: #f0f0f0;
+  font-weight: 600;
+}

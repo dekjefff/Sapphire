@@ -30,11 +30,11 @@ async function proxy(request: Request, context: Context) {
     const value = request.headers.get(key);
     if (value) headers.set(key, value);
   }
-  if (
-    path.length === 3 &&
+  const aiReviewRoute =
     path[0] === 'assessments' &&
-    ['ai-code-review', 'project-code-review'].includes(path[2])
-  ) {
+    ((path.length === 3 && path[2] === 'ai-code-review') ||
+      ((path.length === 3 || path.length === 4) && path[2] === 'project-code-review'));
+  if (aiReviewRoute) {
     const proxyToken = process.env.SAPPHIRE_AI_REVIEW_PROXY_TOKEN?.trim();
     if (!proxyToken) return error(503, 'AI Code Review is not configured on the server');
     headers.set('X-Sapphire-AI-Review-Proxy', proxyToken);

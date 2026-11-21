@@ -8,5 +8,9 @@ export default async function HomePage({
   searchParams: Promise<{ section?: string }>;
 }) {
   const { section } = await searchParams;
-  return <WorkspacePage section={section === 'new' ? 'new' : 'recent'} />;
+  return (
+    <WorkspacePage
+      section={section === 'new' ? 'new' : section === 'projects' ? 'recent' : 'overview'}
+    />
+  );
 }

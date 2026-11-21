@@ -5,7 +5,17 @@ services:
     build:
       context: ./apps/web
     ports:
-      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:${WEB_PORT:-8080}:8080"
+    environment:
+      AUTH_URL: http://localhost:${WEB_PORT:-8080}
+      AUTH_SECRET: "${SAPPHIRE_AUTH_SECRET:?Set SAPPHIRE_AUTH_SECRET}"
+      SAPPHIRE_AUTH_SETUP_CODE: "${SAPPHIRE_AUTH_SETUP_CODE:-}"
+      SAPPHIRE_AUTH_DB_PATH: /var/lib/sapphire-auth/accounts.sqlite
+      SAPPHIRE_PROJECT_REVIEW_PROVIDER: ${SAPPHIRE_PROJECT_REVIEW_PROVIDER:-qwencloud}
+      SAPPHIRE_INTERNAL_API_URL: http://api:8000/
+      SAPPHIRE_AI_REVIEW_PROXY_TOKEN: "${SAPPHIRE_AI_REVIEW_PROXY_TOKEN:-}"
+    volumes:
+      - sapphire_auth_data:/var/lib/sapphire-auth
     depends_on:
       api:
         condition: service_healthy
@@ -28,7 +38,11 @@ services:
       INTAKE_DIR: /intake
       WORKSPACE_ROOTS: /workspace
       CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      SAPPHIRE_AI_REVIEW_REQUIRE_PROXY: "1"
+      SAPPHIRE_PROJECT_REVIEW_PROVIDER: ${SAPPHIRE_PROJECT_REVIEW_PROVIDER:-qwencloud}
+      SAPPHIRE_AI_REVIEW_PROXY_TOKEN: "${SAPPHIRE_AI_REVIEW_PROXY_TOKEN:-}"
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-${QWEN_API_KEY:-}}
       PASSIVE_CAPTURE_KEY_HEX: ${PASSIVE_CAPTURE_KEY_HEX:-}
       DISCOVERY_SCOPE_ALLOWLIST_JSON: '[{"origin":"http://discovery-test-target:3000","pinned_ips":["172.31.80.20"],"policy_revision":"isolated-test-v1","path_mode":"whole_origin","path_prefixes":[]}]'
     volumes:
@@ -98,6 +112,7 @@ services:
     environment:
       DATABASE_URL: postgresql://sapphire:${POSTGRES_PASSWORD:-change-this-local-password}@postgres:5432/sapphire
       GROQ_API_KEY: ${GROQ_API_KEY:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-${QWEN_API_KEY:-}}
       AI_REVIEW_SNAPSHOT_DIR: /ai-review-sources
       INTAKE_DIR: /ai-review-sources
     volumes:
@@ -312,6 +327,7 @@ networks:
     driver: bridge
 
 volumes:
+  sapphire_auth_data:
   postgres_data:
   redis_data:
   artifacts:

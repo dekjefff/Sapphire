@@ -3,8 +3,9 @@
 import { useState, type SyntheticEvent } from 'react';
 import { API_URL } from '@/lib/api';
 import type { Assessment } from '@/lib/types';
-import { StatusPill } from './status-pill';
+import { SeverityPill, StatusPill } from './status-pill';
 import { DiscoveryPanel } from './discovery-panel';
+import { LanguageBreakdown } from './language-breakdown';
 import { PassiveCapturePanel } from './passive-capture-panel';
 import Link from 'next/link';
 import styles from './assessment-card.module.css';
@@ -17,6 +18,11 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
   const [severity, setSeverity] = useState('');
   const [scanner, setScanner] = useState('');
   const toolRuns = new Map((detail?.job ?? []).map((run) => [run.id, run]));
+  const technologies = assessment.technologies ?? [];
+  const detectedLanguages = technologies
+    .filter(({ category }) => category === 'language')
+    .map(({ name }) => name);
+  const tools = technologies.filter(({ category }) => category !== 'language');
   const aiStatus = assessment.ai_review?.status;
   let status: typeof assessment.status | 'incomplete' = assessment.status;
   if (
@@ -50,9 +56,11 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
 
   return (
     <>
-      <StatusPill status={status} />
       <article className={styles.card}>
-        <h2>Assessment overview</h2>
+        <header className={styles.cardHeading}>
+          <h2>Assessment overview</h2>
+          <StatusPill status={status} prominent />
+        </header>
         <p>
           {assessment.source_type === 'zip' ? 'ZIP upload' : 'Mounted repository'} ·{' '}
           {assessment.target_url || `Assessment coverage is ${assessment.coverage_status}`}
@@ -80,10 +88,8 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
             </time>
           </div>
           <div className={styles.meta}>
-            <span>Intake: {assessment.intake_status}</span>
-            <span className={styles.dot}>·</span>
-            <span>Coverage: {assessment.coverage_status}</span>
-            <span className={styles.dot}>·</span>
+            <StatusPill status={assessment.intake_status} prefix="Intake" />
+            <StatusPill status={assessment.coverage_status} prefix="Coverage" />
             <span>{assessment.route_count ?? 0} routes</span>
             {assessment.source_identity && (
               <code title={`${assessment.source_identity_type}: ${assessment.source_identity}`}>
@@ -92,21 +98,23 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
               </code>
             )}
           </div>
-          {!!assessment.technologies?.length && (
-            <div className={styles.technologies} aria-label="Detected technologies">
-              {assessment.technologies.map((technology) => (
-                <span key={`${technology.category}-${technology.name}`}>{technology.name}</span>
-              ))}
-            </div>
+          <LanguageBreakdown languages={assessment.source_languages} detected={detectedLanguages} />
+          {tools.length > 0 && (
+            <section className={styles.technologySection} aria-label="Tools and frameworks">
+              <h4>Tools and frameworks</h4>
+              <div className={styles.technologies}>
+                {tools.map((technology) => (
+                  <span key={`${technology.category}-${technology.name}`}>{technology.name}</span>
+                ))}
+              </div>
+            </section>
           )}
           {(assessment.normalized_finding_count ?? 0) > 0 && (
             <div className={styles.severityCounts}>
               {Object.entries(assessment.severity_counts ?? {})
                 .filter(([, count]) => Number(count) > 0)
                 .map(([severity, count]) => (
-                  <span className={styles[severity]} key={severity}>
-                    {severity}: {count}
-                  </span>
+                  <SeverityPill level={severity} count={Number(count)} key={severity} />
                 ))}
             </div>
           )}
@@ -193,9 +201,8 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
                       <section className={styles.findingGroup} key={run.id}>
                         <div className={styles.groupHead}>
                           <strong>{run.tool}</strong>
-                          <span>
-                            {run.status} · coverage {run.coverage_status}
-                          </span>
+                          <StatusPill status={run.status} />
+                          <StatusPill status={run.coverage_status} prefix="Coverage" />
                         </div>
                         <div className={styles.findingMeta}>
                           <span>Tool {run.tool_version ?? 'unknown'}</span>
@@ -294,9 +301,7 @@ export function AssessmentCard({ assessment }: { assessment: Assessment }) {
               .map((group) => (
                 <section className={styles.findingGroup} key={group.id}>
                   <div className={styles.groupHead}>
-                    <span className={`${styles.severity} ${styles[group.severity]}`}>
-                      {group.severity}
-                    </span>
+                    <SeverityPill level={group.severity} />
                     <strong>{group.title}</strong>
                     {group.duplicate_count > 1 && (
                       <small>{group.duplicate_count} grouped copies</small>
