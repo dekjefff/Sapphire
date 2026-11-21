@@ -20,12 +20,13 @@ On macOS/Linux, use `cp .env.example .env`. Then follow [Account sign-in and reg
 
 ## Account sign-in and registration
 
-Sapphire manages its own operator accounts and uses Auth.js for session cookies. Operators share one workspace. The web service requires a session for the dashboard and for same-origin API requests. The assessment API and database are reachable only inside Docker.
+Sapphire manages its own operator accounts and uses Auth.js for session cookies. Each operator sees their own assessments, reports, and overview totals. The web service requires a session for the dashboard and for same-origin API requests. The assessment API and database are reachable only inside Docker.
 
-1. Set independent random values for the session secret and setup code in the ignored `.env` file. Run `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"` once for each value.
+1. Set independent random values for the session secret, workspace proxy token and setup code in the ignored `.env` file. Run `node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"` once for each value.
 
    ```dotenv
    SAPPHIRE_AUTH_SECRET=<generated-session-secret>
+   SAPPHIRE_AI_REVIEW_PROXY_TOKEN=<generated-workspace-proxy-token>
    SAPPHIRE_AUTH_SETUP_CODE=<generated-one-time-setup-code>
    ```
 
@@ -33,7 +34,7 @@ Sapphire manages its own operator accounts and uses Auth.js for session cookies.
 3. Choose **Register** and enter the setup code with your new account details. Use a password of at least 12 characters. Registration consumes the setup code once. To enroll another operator, set a fresh code and run `docker compose up -d web`.
 4. Sign in using the new account. Keep using the configured `localhost` URL so that browser requests have the expected origin.
 
-Passwords are salted and hashed with scrypt. Account data survives restarts in the `sapphire_auth_data` volume. Sessions expire after one hour. Existing external identity accounts must register a Sapphire account. Assessment data stays in its existing volumes.
+Passwords are salted and hashed with scrypt. Account data survives restarts in the `sapphire_auth_data` volume. Sessions expire after one hour. Existing external identity accounts must register a Sapphire account. Assessment data stays in its existing volumes. Assessments created before account ownership are hidden until a deployment operator explicitly assigns their projects to an account.
 
 ## Configure the source workspace
 
@@ -144,7 +145,7 @@ The default PostgreSQL password is for local development only. Set `POSTGRES_PAS
 - `discovery-gateway`: network boundary enforcing pinned destination and path policy for the discovery runner
 - `samples/security-scan-fixture`: intentionally vulnerable test-only fixture for scanner validation; never install or execute it
 - PostgreSQL: projects, assessments, intake data, detected technologies/routes, tool definitions/runs, scan artifacts, normalized findings/groups, audit events, and Flyway-managed schema history
-- Flyway `12.11.0` applies migrations through `V13__source_language_breakdown.sql` before the API and worker start. The `flyway_schema_history` table records migration state.
+- Flyway `12.11.0` applies migrations through `V14__project_account_ownership.sql` before the API and worker start. The `flyway_schema_history` table records migration state.
 - Redis: persistent queue volume
 - `intake` named volume: staged ZIP files and temporary extraction space shared by API/worker
 - `artifacts` named volume: raw JSON/SARIF scanner artifacts and metadata sidecars

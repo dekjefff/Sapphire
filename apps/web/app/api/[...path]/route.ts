@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { readOperatorSession } from '@/auth';
 
 type Context = { params: Promise<{ path: string[] }> };
@@ -8,7 +9,7 @@ function error(status: number, detail: string) {
 
 async function proxy(request: Request, context: Context) {
   const session = await readOperatorSession();
-  if (!session?.user) return error(401, 'Sign in to Sapphire');
+  if (!session?.user.id) return error(401, 'Sign in to Sapphire');
 
   const reads = request.method === 'GET' || request.method === 'HEAD';
   if (!reads && request.headers.get('origin') !== new URL(process.env.AUTH_URL!).origin) {
@@ -30,12 +31,26 @@ async function proxy(request: Request, context: Context) {
     const value = request.headers.get(key);
     if (value) headers.set(key, value);
   }
+  const proxyToken = process.env.SAPPHIRE_AI_REVIEW_PROXY_TOKEN?.trim();
+  if (upstream.pathname !== '/health') {
+    if (!proxyToken || proxyToken.length < 32) return error(503, 'Workspace API is not configured');
+    const timestamp = String(Date.now());
+    const signature = createHmac('sha256', proxyToken)
+      .update(
+        [session.user.id, timestamp, request.method, upstream.pathname + upstream.search].join(
+          '\n',
+        ),
+      )
+      .digest('hex');
+    headers.set('X-Sapphire-Account', session.user.id);
+    headers.set('X-Sapphire-Account-Time', timestamp);
+    headers.set('X-Sapphire-Account-Signature', signature);
+  }
   const aiReviewRoute =
     path[0] === 'assessments' &&
     ((path.length === 3 && path[2] === 'ai-code-review') ||
       ((path.length === 3 || path.length === 4) && path[2] === 'project-code-review'));
   if (aiReviewRoute) {
-    const proxyToken = process.env.SAPPHIRE_AI_REVIEW_PROXY_TOKEN?.trim();
     if (!proxyToken) return error(503, 'AI Code Review is not configured on the server');
     headers.set('X-Sapphire-AI-Review-Proxy', proxyToken);
   }

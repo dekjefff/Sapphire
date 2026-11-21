@@ -1,5 +1,6 @@
 import { projectReviewCatalog, projectReviewKeys, type ProjectReviewProvider } from "./project-review-models.js";
 import { workspaceOverview } from "./workspace-overview.js";
+import { registerWorkspaceAccess } from "./workspace-access.js";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -24,6 +25,7 @@ import { registerPassiveEvidence } from "./passive-evidence-api.js";
 import { createPassiveEvidenceStore } from "./passive-evidence-store.js";
 
 const app = Fastify({ logger: true });
+registerWorkspaceAccess(app, process.env.SAPPHIRE_AI_REVIEW_PROXY_TOKEN?.trim());
 const redis = createClient({ url: process.env.REDIS_URL ?? "redis://redis:6379/0" });
 redis.on("error", (error) => app.log.error({ err: error }, "Redis client error"));
 const artifactDir = process.env.ARTIFACT_DIR ?? "/artifacts";
@@ -145,7 +147,7 @@ function authorizedScope(assessmentId: string, targetUrl: string, attested: bool
   } catch { return null; }
 }
 
-app.get("/workspace/overview", async () => workspaceOverview());
+app.get("/workspace/overview", async (request) => workspaceOverview(request.accountId));
 app.get("/workspace/review-models", async () => projectReviewCatalog());
 
 app.get("/health", async (_request, reply) => {
@@ -170,7 +172,7 @@ async function createIntake(projectName: string, repositoryPath: string, sourceT
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("INSERT INTO projects (id, name, repository_path, source_type, source_location, intake_status) VALUES ($1, $2, $3, $4, $5, 'queued')", [projectId, projectName, repositoryPath, sourceType, repositoryPath]);
+    await client.query("INSERT INTO projects (id, name, repository_path, source_type, source_location, intake_status, owner_account_id) VALUES ($1, $2, $3, $4, $5, 'queued', $6)", [projectId, projectName, repositoryPath, sourceType, repositoryPath, request.accountId]);
     await client.query("INSERT INTO assessments (id, project_id, target_url, status) VALUES ($1, $2, $3, 'queued')", [assessmentId, projectId, targetUrl]);
     if (reviewProvider) await client.query("INSERT INTO project_code_reviews (assessment_id,provider) VALUES ($1,$2)", [assessmentId, reviewProvider]);
     if (scope) await client.query("INSERT INTO discovery_scopes (id,assessment_id,scheme,host,port,path_mode,path_prefixes,allowed_methods,pinned_ips,policy_revision,policy_sha256,authorization_actor,authorized_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)", [scope.scope_id,scope.assessment_id,scope.scheme,scope.host,scope.port,scope.path_mode,JSON.stringify(scope.path_prefixes),JSON.stringify(scope.allowed_methods),JSON.stringify(scope.pinned_ips),scope.policy_revision,scope.policy_sha256,scope.authorization_actor,scope.authorized_at,scope.expires_at]);
@@ -254,8 +256,8 @@ app.post("/assessments/zip", async (request, reply) => {
   return createIntake(parsed.data.project_name, "ZIP upload", "zip", staged, targetUrl, parsed.data.runtime_discovery_authorized === true, request, reply, reviewProvider);
 });
 
-app.get("/assessments", async () => {
-  const result = await pool.query("SELECT a.id,p.name AS project_name,p.source_type,p.source_identity_type,p.source_identity,p.source_languages,p.intake_status,a.target_url,a.status,a.coverage_status,a.created_at,(SELECT count(*) FROM discovered_routes r WHERE r.assessment_id=a.id)::int AS route_count,(SELECT COALESCE(jsonb_agg(x.route),'[]'::jsonb) FROM (SELECT jsonb_build_object('method',r.method,'path',r.path,'source_file',CASE WHEN r.source_file !~ '(^/|^[A-Za-z]:)' AND position(chr(92) in r.source_file)=0 AND r.source_file !~ '(^|/)\\.\\.(/|$)' THEN r.source_file ELSE NULL END,'source_line',r.source_line,'confidence',r.confidence) AS route FROM discovered_routes r WHERE r.assessment_id=a.id ORDER BY r.source_file,r.source_line NULLS LAST LIMIT 100) x) AS routes,(SELECT COALESCE(jsonb_agg(jsonb_build_object('name',t.name,'category',t.category,'confidence',t.confidence,'evidence',t.evidence,'reason',t.reason) ORDER BY t.category,t.name),'[]'::jsonb) FROM detected_technologies t WHERE t.assessment_id=a.id) AS technologies,(SELECT COALESCE(jsonb_agg(jsonb_build_object('severity',f.severity,'code',f.code,'message',f.message) ORDER BY f.id),'[]'::jsonb) FROM intake_findings f WHERE f.assessment_id=a.id) AS findings,(SELECT count(*)::int FROM normalized_findings nf WHERE nf.assessment_id=a.id) AS normalized_finding_count,(SELECT COALESCE(jsonb_object_agg(severity,finding_count),'{}'::jsonb) FROM (SELECT severity,count(*)::int AS finding_count FROM normalized_findings nf WHERE nf.assessment_id=a.id GROUP BY severity) sev) AS severity_counts FROM assessments a JOIN projects p ON p.id=a.project_id ORDER BY a.created_at DESC LIMIT 100");
+app.get("/assessments", async (request) => {
+  const result = await pool.query("SELECT a.id,p.name AS project_name,p.source_type,p.source_identity_type,p.source_identity,p.source_languages,p.intake_status,a.target_url,a.status,a.coverage_status,a.created_at,(SELECT count(*) FROM discovered_routes r WHERE r.assessment_id=a.id)::int AS route_count,(SELECT COALESCE(jsonb_agg(x.route),'[]'::jsonb) FROM (SELECT jsonb_build_object('method',r.method,'path',r.path,'source_file',CASE WHEN r.source_file !~ '(^/|^[A-Za-z]:)' AND position(chr(92) in r.source_file)=0 AND r.source_file !~ '(^|/)\\.\\.(/|$)' THEN r.source_file ELSE NULL END,'source_line',r.source_line,'confidence',r.confidence) AS route FROM discovered_routes r WHERE r.assessment_id=a.id ORDER BY r.source_file,r.source_line NULLS LAST LIMIT 100) x) AS routes,(SELECT COALESCE(jsonb_agg(jsonb_build_object('name',t.name,'category',t.category,'confidence',t.confidence,'evidence',t.evidence,'reason',t.reason) ORDER BY t.category,t.name),'[]'::jsonb) FROM detected_technologies t WHERE t.assessment_id=a.id) AS technologies,(SELECT COALESCE(jsonb_agg(jsonb_build_object('severity',f.severity,'code',f.code,'message',f.message) ORDER BY f.id),'[]'::jsonb) FROM intake_findings f WHERE f.assessment_id=a.id) AS findings,(SELECT count(*)::int FROM normalized_findings nf WHERE nf.assessment_id=a.id) AS normalized_finding_count,(SELECT COALESCE(jsonb_object_agg(severity,finding_count),'{}'::jsonb) FROM (SELECT severity,count(*)::int AS finding_count FROM normalized_findings nf WHERE nf.assessment_id=a.id GROUP BY severity) sev) AS severity_counts FROM assessments a JOIN projects p ON p.id=a.project_id WHERE p.owner_account_id=$1 ORDER BY a.created_at DESC LIMIT 100", [request.accountId]);
   const reviews = await pool.query(`
     SELECT assessment_id,status,reason,updated_at,pause_requested,cancel_requested,
            (report->>'total_files')::int AS total_files,

@@ -1,6 +1,12 @@
-import NextAuth from 'next-auth';
+import NextAuth, { type DefaultSession } from 'next-auth';
 import Credentials from 'next-auth/providers/credentials';
 import { verifyAccount } from '@/lib/local-accounts';
+
+declare module 'next-auth' {
+  interface Session {
+    user: DefaultSession['user'] & { id: string };
+  }
+}
 
 export function authenticationConfigured() {
   const { AUTH_SECRET, AUTH_URL } = process.env;
@@ -30,7 +36,11 @@ export const { auth, handlers, signIn, signOut } = NextAuth({
   callbacks: {
     jwt({ token, user }) {
       if (user) token.sapphireLocalAccount = true;
-      return token.sapphireLocalAccount ? token : null;
+      return token.sapphireLocalAccount && token.sub ? token : null;
+    },
+    session({ session, token }) {
+      if (token.sub) session.user.id = token.sub;
+      return session;
     },
   },
 });
