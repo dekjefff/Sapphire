@@ -6,6 +6,8 @@ import Fastify from "fastify";
 import cors from "@fastify/cors";
 import { createClient } from "redis";
 import { pool } from "./db.js";
+import { findNpmCli, registerDashboardCodeReview, runDashboardCodeReview, type SavedCodeReview } from "./dashboard-code-review.js";
+import { groqReview } from "./groq-review.js";
 import { isUuid, QUEUE_NAME, type JobMessage } from "./types.js";
 import multipart from "@fastify/multipart";
 import { inspectSource, stageUpload, validateLocalPath } from "./intake.js";
@@ -25,7 +27,7 @@ redis.on("error", (error) => app.log.error({ err: error }, "Redis client error")
 const artifactDir = process.env.ARTIFACT_DIR ?? "/artifacts";
 const origins = (process.env.CORS_ORIGINS ?? "http://localhost:3000").split(",").map((v) => v.trim()).filter(Boolean);
 await app.register(cors, { origin: origins, methods: ["GET", "POST"], allowedHeaders: ["Content-Type"] });
-await app.register(multipart, { limits: { files: 1, fileSize: 100 * 1024 * 1024, fields: 3, parts: 4 } });
+await app.register(multipart, { limits: { files: 1, fileSize: 100 * 1024 * 1024, fields: 4, parts: 5 } });
 
 const zapStore: ZapImportStore = {
   async save(id, report, sourceSha256) {
@@ -47,6 +49,45 @@ if (captureKeyHex && !/^[0-9a-f]{64}$/i.test(captureKeyHex)) {
 }
 const captureKey = captureKeyHex ? Buffer.from(captureKeyHex, "hex") : undefined;
 await app.register(async (scope) => registerPassiveEvidence(scope, createPassiveEvidenceStore(pool), captureKey));
+
+const groqKey = process.env.GROQ_API_KEY?.trim();
+const npmCli = groqKey ? findNpmCli() : undefined;
+const dashboardModel = groqKey && npmCli ? groqReview(groqKey) : undefined;
+const reviewEvent = "ai_code_review.finished";
+registerDashboardCodeReview(app, {
+  origins,
+  requireProxy: process.env.SAPPHIRE_AI_REVIEW_REQUIRE_PROXY === "1",
+  proxyToken: process.env.SAPPHIRE_AI_REVIEW_PROXY_TOKEN?.trim(),
+  async projectReview(assessmentId) {
+    const result = await pool.query(
+      "SELECT status,source_sha256,static_report,report,reason,updated_at FROM project_code_reviews WHERE assessment_id=$1",
+      [assessmentId],
+    );
+    return result.rows[0] ?? null;
+  },
+  run: dashboardModel && npmCli ? (input) => runDashboardCodeReview(input, dashboardModel, npmCli) : undefined,
+  store: {
+    async exists(assessmentId) {
+      const result = await pool.query("SELECT 1 FROM assessments WHERE id=$1", [assessmentId]);
+      return result.rowCount === 1;
+    },
+    async latest(assessmentId) {
+      const result = await pool.query<{ details: SavedCodeReview["report"]; created_at: Date }>(
+        "SELECT details, created_at FROM audit_events WHERE assessment_id=$1 AND event_type=$2 ORDER BY id DESC LIMIT 1",
+        [assessmentId, reviewEvent],
+      );
+      const row = result.rows[0];
+      return row ? { report: row.details, created_at: row.created_at.toISOString() } : null;
+    },
+    async save(assessmentId, report) {
+      const result = await pool.query<{ created_at: Date }>(
+        "INSERT INTO audit_events (assessment_id, actor, event_type, details) VALUES ($1, 'dashboard', $2, $3) RETURNING created_at",
+        [assessmentId, reviewEvent, report],
+      );
+      return { report, created_at: result.rows[0].created_at.toISOString() };
+    },
+  },
+});
 
 function parseId(value: string): string | null {
   return isUuid(value) ? value : null;
@@ -89,7 +130,7 @@ app.get("/health", async (_request, reply) => {
   return reply.code(healthy ? 200 : 503).send({ status: healthy ? "ok" : "degraded", services });
 });
 
-async function createIntake(projectName: string, repositoryPath: string, sourceType: "local_path" | "zip", sourcePath: string, targetUrl: string, runtimeDiscoveryAuthorized: boolean, request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply) {
+async function createIntake(projectName: string, repositoryPath: string, sourceType: "local_path" | "zip", sourcePath: string, targetUrl: string, runtimeDiscoveryAuthorized: boolean, request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply, aiReviewAuthorized = false) {
   const projectId = randomUUID();
   const assessmentId = randomUUID();
   const jobId = randomUUID();
@@ -103,6 +144,7 @@ async function createIntake(projectName: string, repositoryPath: string, sourceT
     await client.query("BEGIN");
     await client.query("INSERT INTO projects (id, name, repository_path, source_type, source_location, intake_status) VALUES ($1, $2, $3, $4, $5, 'queued')", [projectId, projectName, repositoryPath, sourceType, repositoryPath]);
     await client.query("INSERT INTO assessments (id, project_id, target_url, status) VALUES ($1, $2, $3, 'queued')", [assessmentId, projectId, targetUrl]);
+    if (aiReviewAuthorized) await client.query("INSERT INTO project_code_reviews (assessment_id) VALUES ($1)", [assessmentId]);
     if (scope) await client.query("INSERT INTO discovery_scopes (id,assessment_id,scheme,host,port,path_mode,path_prefixes,allowed_methods,pinned_ips,policy_revision,policy_sha256,authorization_actor,authorized_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)", [scope.scope_id,scope.assessment_id,scope.scheme,scope.host,scope.port,scope.path_mode,JSON.stringify(scope.path_prefixes),JSON.stringify(scope.allowed_methods),JSON.stringify(scope.pinned_ips),scope.policy_revision,scope.policy_sha256,scope.authorization_actor,scope.authorized_at,scope.expires_at]);
     await client.query("INSERT INTO tool_runs (id, assessment_id, tool_definition_id, status) VALUES ($1, $2, 'source-intake', 'queued')", [jobId, assessmentId]);
     await client.query("INSERT INTO audit_events (assessment_id, tool_run_id, actor, event_type, details) VALUES ($1, $2, 'api', 'intake.requested', $3)", [assessmentId, jobId, { source_type: sourceType }]);
@@ -122,6 +164,7 @@ async function createIntake(projectName: string, repositoryPath: string, sourceT
     await pool.query("UPDATE tool_runs SET status='failed', finished_at=now(), error='Queue unavailable' WHERE id=$1", [jobId]);
     await pool.query("UPDATE assessments SET status='failed', updated_at=now() WHERE id=$1", [assessmentId]);
     await pool.query("UPDATE projects SET intake_status='failed' WHERE id=$1", [projectId]);
+    if (aiReviewAuthorized) await pool.query("UPDATE project_code_reviews SET status='incomplete',reason='queue_unavailable',updated_at=now() WHERE assessment_id=$1", [assessmentId]);
     await pool.query("INSERT INTO audit_events (assessment_id, tool_run_id, actor, event_type, details) VALUES ($1, $2, 'api', 'intake.failed', $3)", [assessmentId, jobId, { reason: "queue unavailable" }]);
     request.log.error({ err: error }, "Queue unavailable");
     return reply.code(503).send({ detail: "Assessment saved but the queue is unavailable" });
@@ -167,14 +210,26 @@ app.post("/assessments/zip", async (request, reply) => {
   const parsed = createZipAssessmentSchema.safeParse(fields);
   if (!parsed.success) { await rm(stagedPath, { force: true }).catch(() => undefined); await auditIntakeRejection("zip", "invalid_input").catch(() => undefined); return reply.code(422).send({ detail: "Invalid assessment input", issues: parsed.error.issues }); }
   let targetUrl: string;
-  try { targetUrl = validateTarget(parsed.data.target_url); }
+  try { targetUrl = parsed.data.target_url ? validateTarget(parsed.data.target_url) : ""; }
   catch { await rm(stagedPath, { force: true }).catch(() => undefined); await auditIntakeRejection("zip", "invalid_target").catch(() => undefined); return reply.code(422).send({ detail: "Invalid target" }); }
-  return createIntake(parsed.data.project_name, "ZIP upload", "zip", staged, targetUrl, parsed.data.runtime_discovery_authorized === true, request, reply);
+  if (parsed.data.ai_review_authorized && !groqKey) {
+    await rm(stagedPath, { force: true }).catch(() => undefined);
+    return reply.code(503).send({ detail: "Configure GROQ_API_KEY before enabling AI Code Review" });
+  }
+  return createIntake(parsed.data.project_name, "ZIP upload", "zip", staged, targetUrl, parsed.data.runtime_discovery_authorized === true, request, reply, parsed.data.ai_review_authorized === true);
 });
 
 app.get("/assessments", async () => {
   const result = await pool.query("SELECT a.id,p.name AS project_name,p.source_type,p.source_identity_type,p.source_identity,p.intake_status,a.target_url,a.status,a.coverage_status,a.created_at,(SELECT count(*) FROM discovered_routes r WHERE r.assessment_id=a.id)::int AS route_count,(SELECT COALESCE(jsonb_agg(x.route),'[]'::jsonb) FROM (SELECT jsonb_build_object('method',r.method,'path',r.path,'source_file',CASE WHEN r.source_file !~ '(^/|^[A-Za-z]:)' AND position(chr(92) in r.source_file)=0 AND r.source_file !~ '(^|/)\\.\\.(/|$)' THEN r.source_file ELSE NULL END,'source_line',r.source_line,'confidence',r.confidence) AS route FROM discovered_routes r WHERE r.assessment_id=a.id ORDER BY r.source_file,r.source_line NULLS LAST LIMIT 100) x) AS routes,(SELECT COALESCE(jsonb_agg(jsonb_build_object('name',t.name,'category',t.category,'confidence',t.confidence,'evidence',t.evidence,'reason',t.reason) ORDER BY t.category,t.name),'[]'::jsonb) FROM detected_technologies t WHERE t.assessment_id=a.id) AS technologies,(SELECT COALESCE(jsonb_agg(jsonb_build_object('severity',f.severity,'code',f.code,'message',f.message) ORDER BY f.id),'[]'::jsonb) FROM intake_findings f WHERE f.assessment_id=a.id) AS findings,(SELECT count(*)::int FROM normalized_findings nf WHERE nf.assessment_id=a.id) AS normalized_finding_count,(SELECT COALESCE(jsonb_object_agg(severity,finding_count),'{}'::jsonb) FROM (SELECT severity,count(*)::int AS finding_count FROM normalized_findings nf WHERE nf.assessment_id=a.id GROUP BY severity) sev) AS severity_counts FROM assessments a JOIN projects p ON p.id=a.project_id ORDER BY a.created_at DESC LIMIT 100");
-  return result.rows.map((row) => ({ ...row, id: String(row.id), created_at: row.created_at.toISOString() }));
+  const reviews = await pool.query(`
+    SELECT assessment_id,status,reason,updated_at,
+           (report->>'total_files')::int AS total_files,
+           jsonb_array_length(report->'reviewed_files') AS reviewed_files,
+           jsonb_array_length(report->'findings') AS findings
+    FROM project_code_reviews WHERE assessment_id=ANY($1::uuid[])
+  `, [result.rows.map(({ id }) => id)]);
+  const byAssessment = new Map(reviews.rows.map((review) => [review.assessment_id, review]));
+  return result.rows.map((row) => ({ ...row, id: String(row.id), created_at: row.created_at.toISOString(), ai_review: byAssessment.get(row.id) ?? null }));
 });
 
 app.get<{ Params: { assessment_id: string } }>("/assessments/:assessment_id", async (request, reply) => {
@@ -258,7 +313,8 @@ app.post<{ Params: { job_id: string } }>("/jobs/:job_id/cancel", async (request,
   try {
     await client.query("BEGIN");
     const result = await client.query("UPDATE tool_runs SET cancel_requested=true WHERE assessment_id=$1 AND status IN ('queued','running') AND cancel_requested=false RETURNING id,status", [assessmentId]);
-    if (!result.rowCount) { await client.query("ROLLBACK"); return reply.code(409).send({ detail: "Assessment has no cancellable runs" }); }
+    const review = await client.query("UPDATE project_code_reviews SET cancel_requested=true,updated_at=now() WHERE assessment_id=$1 AND status IN ('waiting_for_scans','queued','running') AND NOT cancel_requested", [assessmentId]);
+    if (!result.rowCount && !review.rowCount) { await client.query("ROLLBACK"); return reply.code(409).send({ detail: "Assessment has no cancellable runs" }); }
     for (const row of result.rows) await client.query("INSERT INTO audit_events (assessment_id,tool_run_id,actor,event_type,details) VALUES ($1,$2,'api','job.cancel_requested',$3)", [assessmentId, row.id, { requested_via: id }]);
     await client.query("COMMIT");
     return { id, assessment_id: assessmentId, cancel_requested: true, runs_cancelled: result.rows.map((row) => ({ id: String(row.id), status: row.status })) };

@@ -16,6 +16,8 @@ import { refreshRouteMatches } from "./discovery/matching.js";
 import { DISCOVERY_ADAPTER_VERSION, DISCOVERY_TOOL_VERSIONS, discoveryArtifactLeaf, readGatewayEvents, sha256, verifyDiscoveryArtifact, waitForDiscoveryResult, writeDiscoveryInputs } from "./discovery/coordinator.js";
 import { hasCoverageGaps } from "./discovery/coverage.js";
 import { isReasonCode } from "./reason-codes.js";
+import { queueProjectReview } from "./project-review-queue.js";
+import { maxReviewAttempts, reviewBackoffMs, shouldRetryDependencyScan } from "./review-retry.js";
 
 const redis = createClient({ url: process.env.REDIS_URL ?? "redis://redis:6379/0" });
 redis.on("error", (error) => console.error("Redis worker error:", error));
@@ -25,6 +27,7 @@ const semgrepVersion = "1.185.0";
 const trivyVersion = "0.76.2";
 const adapterVersion = "1.0.0";
 const runnerWaitMs = 12 * 60 * 1000;
+const dependencyStageLimitMs = 18 * 60 * 1000;
 let stopping = false;
 
 type RunnerArtifact = { artifact_kind: "semgrep_json" | "semgrep_sarif" | "trivy_json"; media_type: string; relative_path: string; sha256: string; byte_size: number; exit_code: number | null; duration_ms: number; status: "complete" | "failed" | "cancelled"; failure_code: string | null; stderr_bytes: number };
@@ -53,7 +56,7 @@ async function pollCancellation(toolRunId: string): Promise<boolean> {
   return Boolean(result.rows[0]?.cancel_requested);
 }
 
-async function enqueueAndWait(task: { task_id: string; assessment_id: string; tool_run_id: string; intake_job_id: string; source_type: "local_path" | "zip"; source_path: string; tool: "semgrep" | "trivy" }): Promise<RunnerResult> {
+async function enqueueAndWait(task: { task_id: string; assessment_id: string; tool_run_id: string; intake_job_id: string; source_type: "local_path" | "zip"; source_path: string; tool: "semgrep" | "trivy" }, waitMs = runnerWaitMs): Promise<RunnerResult> {
   const requestDir = join(scanWorkDir, "requests");
   const resultDir = join(scanWorkDir, "results");
   const cancelDir = join(scanWorkDir, "cancel");
@@ -66,7 +69,7 @@ async function enqueueAndWait(task: { task_id: string; assessment_id: string; to
   await rm(cancelPath, { force: true });
   await writeFile(tempPath, JSON.stringify(task), { mode: 0o644, flag: "wx" });
   await rename(tempPath, requestPath);
-  const deadline = Date.now() + runnerWaitMs;
+  const deadline = Date.now() + waitMs;
   let cancelRequested = false;
   while (Date.now() < deadline) {
     if (await access(resultPath).then(() => true).catch(() => false)) {
@@ -84,6 +87,17 @@ async function enqueueAndWait(task: { task_id: string; assessment_id: string; to
   }
   await writeFile(cancelPath, "cancel", { mode: 0o644 }).catch(() => undefined);
   throw new Error("scanner_runner_timeout");
+}
+
+async function cleanScannerTask(taskId: string) {
+  await rm(join(scanWorkDir, "requests", `${taskId}.json`), { force: true }).catch(() => undefined);
+  await rm(join(scanWorkDir, "cancel", `${taskId}.cancel`), { force: true }).catch(() => undefined);
+  await rm(join(scanWorkDir, "results", taskId), { recursive: true, force: true }).catch(() => undefined);
+  await rm(join(scanWorkDir, "results", `${taskId}.result.json`), { force: true }).catch(() => undefined);
+}
+
+function scannerReason(value: unknown, fallback: string) {
+  return typeof value === "string" && /^[a-z0-9_]{1,80}$/.test(value) ? value : fallback;
 }
 
 function artifactLeaf(kind: RunnerArtifact["artifact_kind"]): string {
@@ -143,12 +157,55 @@ async function runTool(assessmentId: string, intakeJobId: string, source: Intake
     return { status: "cancelled", findings: 0, failureCode: "cancelled" };
   }
   await audit(assessmentId, toolRunId, "worker", "tool.started", { tool, network: false, source_read_only: true });
-  const taskId = toolRunId;
-  let result: RunnerResult;
-  try {
-    result = await enqueueAndWait({ task_id: taskId, assessment_id: assessmentId, tool_run_id: toolRunId, intake_job_id: intakeJobId, source_type: source.sourceType as "local_path" | "zip", source_path: source.scanRoot, tool });
-  } catch (error) {
-    const code = error instanceof Error && /^[a-z0-9_]+$/.test(error.message) ? error.message : "scanner_runner_failure";
+  const deadline = Date.now() + (tool === "trivy" ? dependencyStageLimitMs : runnerWaitMs);
+  let taskId = toolRunId;
+  let result: RunnerResult | undefined;
+  let partial: { result: RunnerResult; taskId: string } | undefined;
+  let code = "scanner_runner_failure";
+  const attempts = tool === "trivy" ? maxReviewAttempts : 1;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    if (attempt > 1 && await pollCancellation(toolRunId)) {
+      if (partial) await cleanScannerTask(partial.taskId);
+      await pool.query("UPDATE tool_runs SET status='cancelled',finished_at=now(),coverage_status='incomplete',error='cancelled' WHERE id=$1", [toolRunId]);
+      await audit(assessmentId, toolRunId, "worker", "tool.cancelled", { tool, phase: "retry" });
+      return { status: "cancelled", findings: 0, failureCode: "cancelled" };
+    }
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    taskId = attempt === 1 ? toolRunId : randomUUID();
+    try {
+      result = await enqueueAndWait({ task_id: taskId, assessment_id: assessmentId, tool_run_id: toolRunId, intake_job_id: intakeJobId, source_type: source.sourceType as "local_path" | "zip", source_path: source.scanRoot, tool }, Math.min(runnerWaitMs, remaining));
+      if (result.status === "cancelled") break;
+      if (result.status === "complete" && !result.failure_code) break;
+      code = scannerReason(result.failure_code, "scanner_incomplete");
+    } catch (error) {
+      result = undefined;
+      code = scannerReason(error instanceof Error ? error.message : null, "scanner_runner_failure");
+    }
+    if (tool !== "trivy") break;
+    const wait = reviewBackoffMs(attempt);
+    const retry = shouldRetryDependencyScan(code, attempt) && Date.now() + wait < deadline;
+    await audit(assessmentId, toolRunId, "worker", "dependency_scan.attempt_failed", {
+      attempt, reason_code: code, retry_scheduled: retry,
+    });
+    if (!retry) break;
+    if (result?.artifacts.length) {
+      if (partial) await cleanScannerTask(partial.taskId);
+      partial = { result, taskId };
+    } else if (result) await cleanScannerTask(taskId);
+    result = undefined;
+    await delay(wait);
+  }
+  if (partial) {
+    if (!result || (result.status === "failed" && !result.artifacts.length)) {
+      if (result) await cleanScannerTask(taskId);
+      result = { ...partial.result, status: "failed", failure_code: code };
+      taskId = partial.taskId;
+    } else {
+      await cleanScannerTask(partial.taskId);
+    }
+  }
+  if (!result) {
     await pool.query("UPDATE tool_runs SET status='failed',finished_at=now(),error=$2,tool_version=$3,adapter_version=$4,coverage_status='incomplete' WHERE id=$1", [toolRunId, code, tool === "semgrep" ? semgrepVersion : trivyVersion, adapterVersion]);
     await audit(assessmentId, toolRunId, "worker", "tool.failed", { tool, reason_code: code });
     return { status: "failed", findings: 0, failureCode: code };
@@ -157,7 +214,7 @@ async function runTool(assessmentId: string, intakeJobId: string, source: Intake
   const client = await pool.connect();
   let normalized: NormalizedFinding[] = [];
   let parseError: string | null = null;
-  let failureCode = result.failure_code;
+  let failureCode = result.failure_code ? scannerReason(result.failure_code, "scanner_incomplete") : null;
   const artifactIds = new Map<string, string>();
   try {
     await client.query("BEGIN");
@@ -191,10 +248,7 @@ async function runTool(assessmentId: string, intakeJobId: string, source: Intake
     return { status: "failed", findings: 0, failureCode: code };
   } finally {
     client.release();
-    await rm(join(scanWorkDir, "requests", `${taskId}.json`), { force: true }).catch(() => undefined);
-    await rm(join(scanWorkDir, "cancel", `${taskId}.cancel`), { force: true }).catch(() => undefined);
-    await rm(join(scanWorkDir, "results", taskId), { recursive: true, force: true }).catch(() => undefined);
-    await rm(join(scanWorkDir, "results", `${taskId}.result.json`), { force: true }).catch(() => undefined);
+    await cleanScannerTask(taskId);
   }
 }
 
@@ -426,6 +480,12 @@ async function processJob(raw: string): Promise<void> {
       await pool.query("UPDATE assessments SET status='cancelled',coverage_status='incomplete',updated_at=now() WHERE id=$1", [assessmentId]);
       await audit(assessmentId, null, "worker", "assessment.cancelled", { phase: "static_pipeline" });
       return;
+    }
+    if (message.source_type === "zip") {
+      await queueProjectReview(assessmentId, message.source_path, source.contentSha256, [
+        { tool: "semgrep", status: semgrep.status, findings: semgrep.findings, failure_code: semgrep.failureCode },
+        { tool: "trivy", status: trivy.status, findings: trivy.findings, failure_code: trivy.failureCode },
+      ], source.findings.map(({ code }) => code).filter((code) => hasCoverageGaps([code])));
     }
     let discovery: { httpx: Awaited<ReturnType<typeof runDiscoveryTool>>; katana?: Awaited<ReturnType<typeof runDiscoveryTool>> } | undefined;
     const scope = await loadApprovedDiscoveryScope(assessmentId);

@@ -14,9 +14,13 @@ export const createAssessmentSchema = z.object({
 
 export const createZipAssessmentSchema = z.object({
   project_name: text(120),
-  target_url: z.url().max(2048),
+  target_url: z.url().max(2048).optional(),
   runtime_discovery_authorized: discoveryAttestation,
-}).strict();
+  ai_review_authorized: discoveryAttestation,
+}).strict().refine(
+  (input) => Boolean(input.target_url) || (input.ai_review_authorized === true && input.runtime_discovery_authorized !== true),
+  { path: ["target_url"], message: "A target URL is required unless this is a source-only AI review" },
+);
 
 const pageOffset = z.coerce.number().int().min(0).max(1_000_000).default(0);
 export const assessmentDetailQuerySchema = z.object({

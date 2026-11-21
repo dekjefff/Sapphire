@@ -52,6 +52,48 @@ export interface AssessmentInput {
   source_type: 'local_path' | 'zip';
   source_file?: File;
   runtime_discovery_authorized: boolean;
+  ai_review_authorized?: boolean;
+  ai_review_provider?: "groq" | "qwencloud";
+}
+
+export type ProjectReviewStatus =
+  'waiting_for_scans' | 'queued' | 'running' | 'completed' | 'incomplete' | 'cancelled';
+
+export interface ProjectReviewSummary {
+  status: ProjectReviewStatus;
+  reason: string | null;
+  updated_at: string;
+  total_files: number | null;
+  reviewed_files: number | null;
+  findings: number | null;
+}
+
+export interface ProjectReviewDetail {
+  status: ProjectReviewStatus;
+  reason: string | null;
+  source_sha256: string | null;
+  static_report: {
+    tools: { tool: string; status: string; findings: number; failure_code: string | null }[];
+    intake_gap_codes: string[];
+    finding_count: number;
+  } | null;
+  report: {
+    model: string;
+    total_files: number;
+    excluded_files: number;
+    reviewed_files?: string[];
+    pending_files: { file: string; reason: string }[];
+    findings: {
+      file: string;
+      line: number;
+      severity: string;
+      title: string;
+      evidence: string;
+      remediation: string;
+      related_static_finding_ids: string[];
+    }[];
+    coverage_gaps: string[];
+  } | null;
 }
 
 export interface AssessmentCreated {
@@ -63,6 +105,7 @@ export interface AssessmentCreated {
 
 export interface Assessment {
   id: string;
+  ai_review?: ProjectReviewSummary | null;
   project_name: string;
   repository_path: string;
   target_url: string;

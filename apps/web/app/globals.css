@@ -1,12 +1,53 @@
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url(/fonts/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuLyfMZg.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url(/fonts/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuI6fMZg.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url(/fonts/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuGKYMZg.ttf) format('truetype');
+}
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url(/fonts/UcCO3FwrK3iLTeHuS_nVMrMxCp50SjIw2boKoduKmMEVuFuYMZg.ttf) format('truetype');
+}
+
 :root {
-  --color-ink: #17231f;
-  --color-muted: #75817c;
-  --color-line: #e6ebe7;
-  --color-green: #147e66;
-  --color-green-pale: #eff7f3;
-  --color-background: #f7f9f7;
+  --font-sans: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --color-ink: #20252b;
+  --color-muted: #606973;
+  --color-line: #dfe3e7;
+  --color-canvas: #f6f7f8;
+  --color-green: #1b754d;
+  --color-green-hover: #155e3e;
+  --color-green-accent: #38a176;
+  --color-green-soft: #d8eee2;
+  --color-green-pale: #eaf7ef;
+  --color-background: #fff;
   --color-white: #fff;
-  --shadow-panel: 0 2px 8px #183c3010;
+  --shadow-panel: 0 2px 8px #18212b08;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+  --radius-control: 8px;
+  --radius-panel: 16px;
   color-scheme: light;
 }
 
@@ -23,7 +64,7 @@ body {
   margin: 0;
   background: var(--color-background);
   color: var(--color-ink);
-  font-family: 'DM Sans', Arial, sans-serif;
+  font-family: var(--font-sans);
   font-size: 14px;
 }
 
@@ -32,21 +73,72 @@ input {
   font: inherit;
 }
 
+input[type='file']::file-selector-button {
+  margin-inline-end: 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-line);
+  border-radius: 8px;
+  background: var(--color-green-pale);
+  color: var(--color-green);
+  font: inherit;
+  font-weight: 650;
+}
+
+input[type='file']:not(:disabled)::file-selector-button {
+  cursor: pointer;
+}
+
 .account-bar {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 12px;
-  padding: 10px 24px;
-  border-bottom: 1px solid var(--color-line);
-  background: var(--color-white);
+  gap: 10px;
+  min-width: 0;
+  color: var(--color-muted);
+}
+
+.account-bar span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .account-bar button {
-  padding: 6px 12px;
+  min-height: 44px;
+  flex: none;
+  padding: 8px 16px;
   border: 1px solid var(--color-line);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   background: var(--color-white);
-  color: var(--color-green);
+  color: var(--color-ink);
+  font-weight: 600;
   cursor: pointer;
+}
+
+.account-bar button:focus-visible {
+  outline: 2px solid var(--color-green);
+  outline-offset: 2px;
+}
+
+.sapphire-brand {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 16px;
+  color: var(--color-green);
+  font-size: 23px;
+  font-weight: 700;
+}
+
+.sapphire-brand::before {
+  content: '';
+  width: 44px;
+  aspect-ratio: 1;
+  flex: none;
+  background: url('/sapphire-logo.png') center / contain no-repeat;
+}
+
+select,
+textarea {
+  font-family: inherit;
 }

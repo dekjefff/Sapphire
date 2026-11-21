@@ -28,6 +28,7 @@ services:
       INTAKE_DIR: /intake
       WORKSPACE_ROOTS: /workspace
       CORS_ORIGINS: http://localhost:8080,http://127.0.0.1:8080
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
       PASSIVE_CAPTURE_KEY_HEX: ${PASSIVE_CAPTURE_KEY_HEX:-}
       DISCOVERY_SCOPE_ALLOWLIST_JSON: '[{"origin":"http://discovery-test-target:3000","pinned_ips":["172.31.80.20"],"policy_revision":"isolated-test-v1","path_mode":"whole_origin","path_prefixes":[]}]'
     volumes:
@@ -61,10 +62,12 @@ services:
       SCAN_WORK_DIR: /scan-work
       DISCOVERY_WORK_DIR: /discovery-work
       DISCOVERY_GATEWAY_EVENTS_DIR: /gateway-events
+      AI_REVIEW_SNAPSHOT_DIR: /ai-review-sources
     volumes:
       - artifacts:/artifacts
       - intake:/intake
       - scan_work:/scan-work
+      - ai_review_sources:/ai-review-sources
       - discovery_work:/discovery-work
       - discovery_gateway_events:/gateway-events:ro
       - "${WORKSPACE_HOST_PATH:-.}:/workspace:ro"
@@ -86,6 +89,31 @@ services:
     mem_limit: 3g
     cpus: 2
     tmpfs: ["/tmp:rw,nosuid,nodev,size=512m"]
+    restart: unless-stopped
+
+  project-reviewer:
+    build:
+      context: ./apps/api
+    command: ["node", "dist/project-review-worker.js"]
+    environment:
+      DATABASE_URL: postgresql://sapphire:${POSTGRES_PASSWORD:-change-this-local-password}@postgres:5432/sapphire
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      AI_REVIEW_SNAPSHOT_DIR: /ai-review-sources
+      INTAKE_DIR: /ai-review-sources
+    volumes:
+      - ai_review_sources:/ai-review-sources
+    depends_on:
+      flyway:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    networks: [sapphire_internal, sapphire_ingress]
+    read_only: true
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    pids_limit: 128
+    mem_limit: 1g
+    tmpfs: ["/tmp:rw,nosuid,nodev,size=64m"]
     restart: unless-stopped
 
   scanner-runner:
@@ -288,6 +316,7 @@ volumes:
   redis_data:
   artifacts:
   intake:
+  ai_review_sources:
   scan_work:
   discovery_work:
   discovery_gateway_events:

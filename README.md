@@ -106,6 +106,20 @@ After applying database migration V8, an authenticated operator can associate an
 
 Retrieve redacted findings from `GET /assessments/<assessment-id>/zap-report/findings?limit=50&offset=0` and instances from `GET /assessments/<assessment-id>/zap-report/findings/<index>/instances?revision_id=<revision-id>&limit=50&offset=0`; limits are 1–100. A finding index is its zero-based position (page offset plus position). Each response has a revision ID; compare revisions across pages. Instance requests require the finding page's revision and return 409 if the report was replaced. No target is contacted by these endpoints.
 
+## AI Code Review
+
+Configure `GROQ_API_KEY` in the local Compose environment. For the Auth.js deployment, also set a random `SAPPHIRE_AI_REVIEW_PROXY_TOKEN` for the web and API containers to share. Keep both values out of Git.
+
+From the authenticated Dashboard, upload the project ZIP and choose **Include AI Code Review** when creating the assessment. The static worker runs Semgrep and Trivy, saves a JSON summary bound to the source fingerprint, and queues the review on the same assessment. The model reviews supported source files based on the ZIP inventory, including files with no scanner findings. Static or intake gaps remain visible as first-pass limitations.
+
+The separate `project-reviewer` service checks the fingerprint before sending batches to Groq. Each processing window allows up to 40 requests, 200,000 conservatively estimated token reservations, and 30 minutes. The same assessment automatically resumes from its saved source line across windows. Provider limits and Retry-After still apply. The total project limit is 48 hours from consent, 1,200 requests, and 6 million estimated token reservations. The temporary ZIP is removed after the review is finalized, cancelled, or expires. Open **AI Code Review** on the assessment to see progress, findings and remaining files. The CLI report viewer remains available for reports created outside this workflow.
+
+Temporary errors from Groq and the dependency scanner can trigger up to three retries after the first attempt. Project reviews also retry Groq HTTP 400 responses. Each Groq attempt counts against the assessment budget. The backend records safe error categories, attempt numbers, HTTP statuses, and the provider's machine-readable error code when available. Provider messages and response bodies are discarded. If the review remains incomplete, the dashboard shows saved findings and coverage gaps with user-facing messages.
+
+Groq reviews use low reasoning effort and request compact JSON. If Groq cannot finish or validate the JSON, the worker can split a source chunk and retry the smaller pieces within the same budget. If a piece still cannot be reviewed, its file stays incomplete and the worker continues with the remaining files.
+
+The worker reserves capacity before each request, then reconciles with Groq's reported token usage. It uses recent prompt usage to estimate the next request and checks the provider's remaining-token headers and Retry-After. If usage is unavailable, the original reservation remains charged.
+
 ## Stop and reset
 
 Stop containers while preserving database, queue, and artifact volumes:
