@@ -1,11 +1,12 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState, type CSSProperties } from 'react';
 import { fetchProjectReview } from '@/lib/api';
 import type { ProjectReviewDetail, ProjectReviewSummary } from '@/lib/types';
-import styles from './ai-code-review-panel.module.css';
+import { ReviewFindings } from './review-findings';
+import styles from './review-workspace.module.css';
 
-const labels: Record<ProjectReviewSummary['status'], string> = {
+export const reviewStatusLabels: Record<ProjectReviewSummary['status'], string> = {
   waiting_for_scans: 'Waiting for static scans',
   queued: 'Queued',
   running: 'Reviewing source',
@@ -14,7 +15,15 @@ const labels: Record<ProjectReviewSummary['status'], string> = {
   cancelled: 'Cancelled',
 };
 
-const pendingPageSize = 30;
+const filePageSize = 30;
+const retryableReasons = new Set([
+  'not_started',
+  'partially_reviewed',
+  'time_budget',
+  'request_budget',
+  'token_budget',
+  'model_rate_limited',
+]);
 const reasonLabels: Record<string, string> = {
   continuing_review: 'Progress saved. Review will continue automatically.',
   waiting_for_provider: 'Progress saved. Waiting for the AI service before continuing.',
@@ -51,18 +60,20 @@ const labelReason = (reason: string) =>
 
 export function ProjectCodeReview({
   assessmentId,
+  projectName,
   summary,
 }: {
   assessmentId: string;
+  projectName: string;
   summary: ProjectReviewSummary;
 }) {
-  const [open, setOpen] = useState(false);
   const [report, setReport] = useState<ProjectReviewDetail | null>(null);
   const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState(0);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!open) return;
     let current = true;
     void fetchProjectReview(assessmentId)
       .then(({ review }) => {
@@ -73,119 +84,199 @@ export function ProjectCodeReview({
       .catch((cause: unknown) => {
         if (current)
           setError(cause instanceof Error ? cause.message : 'Could not load AI Code Review');
+      })
+      .finally(() => {
+        if (current) setLoading(false);
       });
     return () => {
       current = false;
     };
-  }, [assessmentId, open, summary.updated_at]);
+  }, [assessmentId, summary.updated_at, attempt]);
 
-  const pending = report?.report?.pending_files ?? [];
-  const lastPage = Math.max(0, Math.ceil(pending.length / pendingPageSize) - 1);
+  const result = report?.report;
+  const active = ['waiting_for_scans', 'queued', 'running'].includes(summary.status);
+  const files = [
+    ...(result?.pending_files ?? []).map(({ file, reason }) => ({
+      file,
+      detail: labelReason(reason),
+      status:
+        reason === 'cancelled' || summary.status === 'cancelled'
+          ? 'Cancelled'
+          : active && retryableReasons.has(reason)
+            ? reason === 'partially_reviewed'
+              ? 'Partial'
+              : 'Queued'
+            : 'Incomplete',
+    })),
+    ...(result?.reviewed_files ?? []).map((file) => ({
+      file,
+      detail: 'This file was fully reviewed.',
+      status: 'Completed',
+    })),
+  ];
+  const lastPage = Math.max(0, Math.ceil(files.length / filePageSize) - 1);
   const activePage = Math.min(lastPage, page);
-  const findings = report?.report?.findings ?? [];
+
   return (
-    <details
-      className={styles.details}
-      open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
-    >
-      <summary>
-        AI Code Review · {labels[summary.status]}
-        {summary.total_files !== null &&
-          ` · ${summary.reviewed_files ?? 0}/${summary.total_files} files`}
-      </summary>
-      {summary.reason && <p role="status">{labelReason(summary.reason)}</p>}
-      {error && (
-        <p className={styles.error} role="alert">
-          {error}
-        </p>
-      )}
-      {!report && !error && open && <p role="status">Loading AI Code Review…</p>}
-      {report?.static_report && (
-        <p>
-          First pass · {report.static_report.finding_count} scanner findings ·{' '}
-          {report.static_report.tools.map(({ tool, status }) => `${tool} ${status}`).join(' · ')}
-          {report.static_report.intake_gap_codes.length > 0 && ' · Intake reported coverage gaps'}
-        </p>
-      )}
-      {report?.report && (
-        <>
-          <p>
-            {report.report.model} · {findings.length} model findings ·{' '}
-            {report.report.excluded_files} files outside supported source types or paths
-          </p>
-          {findings.length > 0 && (
-            <>
-              <p>Verify model findings against the source before confirming them.</p>
-              <ul className={styles.findings}>
-                {findings.map((finding, index) => (
-                  <li key={`${finding.file}:${finding.line}:${index}`}>
-                    <div className={styles.findingHeading}>
-                      <strong>{finding.title}</strong>
-                      <span>{finding.severity}</span>
-                    </div>
-                    <code>
-                      {finding.file}:{finding.line}
-                    </code>
-                    <pre>{finding.evidence}</pre>
-                    <p>{finding.remediation}</p>
-                    <p>
-                      {finding.related_static_finding_ids.length > 0
-                        ? 'Scanner also reported this source location'
-                        : 'Additional model finding'}
-                    </p>
-                  </li>
+    <>
+      <section className={styles.surface} aria-labelledby="review-queue">
+        <div className={styles.header}>
+          <div>
+            <h2 id="review-queue">{projectName}</h2>
+            <p className={styles.muted}>
+              {summary.total_files === null
+                ? 'Source file count unavailable'
+                : `${summary.reviewed_files ?? 0} / ${summary.total_files} files reviewed`}
+            </p>
+          </div>
+          <span className={styles.status} data-status={summary.status}>
+            {reviewStatusLabels[summary.status]}
+          </span>
+        </div>
+        {summary.reason && <p role="status">{labelReason(summary.reason)}</p>}
+        {error && (
+          <div role="alert">
+            <p>{error}</p>
+            <button
+              className={styles.control}
+              type="button"
+              onClick={() => setAttempt(attempt + 1)}
+            >
+              Retry
+            </button>
+          </div>
+        )}
+        {loading && <p role="status">Loading review…</p>}
+        <h3>File queue</h3>
+        {files.length ? (
+          <>
+            <ul className={styles.queue}>
+              {files
+                .slice(activePage * filePageSize, (activePage + 1) * filePageSize)
+                .map(({ file, detail, status }, index) => (
+                  <QueueRow key={file} file={file} detail={detail} status={status} index={index} />
                 ))}
-              </ul>
-            </>
-          )}
-          {pending.length > 0 && (
-            <details className={styles.details}>
-              <summary>Files pending or not fully reviewed ({pending.length})</summary>
-              <ul>
-                {pending
-                  .slice(activePage * pendingPageSize, (activePage + 1) * pendingPageSize)
-                  .map(({ file, reason }) => (
-                    <li key={file}>
-                      <code>{file}</code> · {labelReason(reason)}
-                    </li>
+            </ul>
+            {lastPage > 0 && (
+              <div className={styles.pagination}>
+                <button
+                  className={styles.control}
+                  type="button"
+                  disabled={activePage === 0}
+                  onClick={() => setPage(activePage - 1)}
+                >
+                  Previous
+                </button>
+                <span>
+                  Page {activePage + 1} of {lastPage + 1}
+                </span>
+                <button
+                  className={styles.control}
+                  type="button"
+                  disabled={activePage === lastPage}
+                  onClick={() => setPage(activePage + 1)}
+                >
+                  Next
+                </button>
+              </div>
+            )}
+          </>
+        ) : (
+          !loading &&
+          !error && (
+            <p className={styles.muted}>
+              {active ? 'Waiting for file progress from the review.' : 'No pending files reported.'}
+            </p>
+          )
+        )}
+      </section>
+      <section className={styles.surface} aria-labelledby="review-report">
+        <h2 id="review-report">Review report</h2>
+        {report?.static_report && (
+          <details className={styles.note}>
+            <summary>Static scan · {report.static_report.finding_count} findings</summary>
+            <ul>
+              {report.static_report.tools.map(({ tool, status }) => (
+                <li key={tool}>
+                  {tool} · {status}
+                </li>
+              ))}
+            </ul>
+            {report.static_report.intake_gap_codes.length > 0 && (
+              <p>Intake reported coverage gaps.</p>
+            )}
+          </details>
+        )}
+        {result ? (
+          <>
+            <p className={styles.muted}>
+              {result.model} · {result.excluded_files} excluded files
+            </p>
+            <ReviewFindings findings={result.findings} />
+            {result.coverage_gaps.length > 0 && (
+              <details className={styles.note}>
+                <summary>Coverage notes ({result.coverage_gaps.length})</summary>
+                <ul>
+                  {result.coverage_gaps.map((gap, index) => (
+                    <li key={index}>{gap}</li>
                   ))}
-              </ul>
-              {lastPage > 0 && (
-                <div className={styles.controls}>
-                  <button
-                    type="button"
-                    disabled={activePage === 0}
-                    onClick={() => setPage(activePage - 1)}
-                  >
-                    Previous
-                  </button>
-                  <span>
-                    Page {activePage + 1} of {lastPage + 1}
-                  </span>
-                  <button
-                    type="button"
-                    disabled={activePage === lastPage}
-                    onClick={() => setPage(activePage + 1)}
-                  >
-                    Next
-                  </button>
-                </div>
-              )}
-            </details>
-          )}
-          {report.report.coverage_gaps.length > 0 && (
-            <details className={styles.details}>
-              <summary>Model coverage notes ({report.report.coverage_gaps.length})</summary>
-              <ul>
-                {report.report.coverage_gaps.map((gap, index) => (
-                  <li key={index}>{gap}</li>
-                ))}
-              </ul>
-            </details>
-          )}
-        </>
-      )}
-    </details>
+                </ul>
+              </details>
+            )}
+          </>
+        ) : (
+          !loading && !error && <p className={styles.muted}>No saved AI report yet.</p>
+        )}
+      </section>
+    </>
+  );
+}
+
+function QueueRow({
+  file,
+  detail,
+  status,
+  index,
+}: {
+  file: string;
+  detail: string;
+  status: string;
+  index: number;
+}) {
+  const panelId = useId();
+  const [open, setOpen] = useState(false);
+  const active = status === 'Queued' || status === 'Partial';
+
+  return (
+    <li
+      className={styles.queueRow}
+      style={{ '--entry-delay': `${Math.min(index, 8) * 80}ms` } as CSSProperties}
+    >
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen(!open)}
+      >
+        <span
+          className={styles.queueIcon}
+          data-active={active}
+          data-status={status.toLowerCase()}
+          aria-hidden="true"
+        >
+          {active || status === 'Completed' ? '' : '–'}
+        </span>
+        <code>{file}</code>
+        <span className={styles.status} data-status={status.toLowerCase()}>
+          {status}
+        </span>
+        <span className={styles.chevron} aria-hidden="true" />
+      </button>
+      <div id={panelId} aria-hidden={!open} data-open={open} className={styles.queueDetail}>
+        <div>
+          <p>{detail}</p>
+        </div>
+      </div>
+    </li>
   );
 }

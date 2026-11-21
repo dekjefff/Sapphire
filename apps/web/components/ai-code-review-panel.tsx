@@ -1,11 +1,12 @@
 'use client';
 
-import { useState, type ChangeEvent } from 'react';
+import { useState } from 'react';
 import {
   maxCodeReviewReportBytes,
   parseCodeReviewReport,
   type CodeReviewReport,
 } from '@/lib/code-review-report';
+import { ReviewFindings } from './review-findings';
 import styles from './ai-code-review-panel.module.css';
 
 type ImportState =
@@ -22,11 +23,13 @@ const dependencyLabels = {
 export function AiCodeReviewPanel() {
   const [state, setState] = useState<ImportState>({ status: 'empty' });
 
-  async function importReport(event: ChangeEvent<HTMLInputElement>) {
-    const input = event.currentTarget;
-    const file = input.files?.[0];
+  async function importReport(files: FileList | null) {
+    const file = files?.[0];
     if (!file) return;
-    input.value = '';
+    if (files.length !== 1) {
+      setState({ status: 'error', message: 'Choose one JSON report.' });
+      return;
+    }
     setState({ status: 'loading' });
     try {
       if (file.size > maxCodeReviewReportBytes) {
@@ -43,17 +46,33 @@ export function AiCodeReviewPanel() {
   return (
     <section className={styles.panel} aria-labelledby="ai-review-title">
       <h2 id="ai-review-title">Open a CLI report</h2>
-      <p id="ai-review-help">The imported file stays in this tab.</p>
       <div className={styles.controls}>
-        <label className={styles.fileInput}>
-          <span>Report file</span>
+        <label className={styles.dropZone}>
           <input
             type="file"
+            aria-label="Browse files"
             accept=".json,application/json"
             aria-describedby="ai-review-help"
             disabled={state.status === 'loading'}
-            onChange={(event) => void importReport(event)}
+            onChange={(event) => {
+              void importReport(event.currentTarget.files);
+              event.currentTarget.value = '';
+            }}
+            onDragOver={(event) => {
+              if (event.dataTransfer.types.includes('Files')) event.preventDefault();
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              if (state.status !== 'loading') void importReport(event.dataTransfer.files);
+            }}
           />
+          <span className={styles.browse} aria-hidden="true">
+            Browse files
+          </span>
+          <span className={styles.dropCopy}>
+            <strong>Choose a Sapphire CLI report</strong>
+            <span id="ai-review-help">Upload a local JSON report to inspect its findings.</span>
+          </span>
         </label>
         {state.status === 'loaded' && (
           <button type="button" onClick={() => setState({ status: 'empty' })}>
@@ -122,28 +141,7 @@ function ReviewResult({ fileName, report }: { fileName: string; report: CodeRevi
             </ul>
           </details>
           <h3>Model findings ({report.findings.length})</h3>
-          {report.findings.length > 0 ? (
-            <>
-              <p>Verify each finding against the source before making changes.</p>
-              <ul className={styles.findings}>
-                {report.findings.map((finding, index) => (
-                  <li key={index}>
-                    <div className={styles.findingHeading}>
-                      <strong>{finding.title}</strong>
-                      <span>{finding.severity}</span>
-                    </div>
-                    <code>
-                      {finding.file}:{finding.line}
-                    </code>
-                    <pre>{finding.evidence}</pre>
-                    <p>{finding.remediation}</p>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : (
-            <p>The model reported no findings in the selected files.</p>
-          )}
+          <ReviewFindings findings={report.findings} />
           {report.coverage_gaps.length > 0 && (
             <details className={styles.details} open>
               <summary>Reported coverage gaps ({report.coverage_gaps.length})</summary>

@@ -1,19 +1,11 @@
 .panel {
-  margin-top: 22px;
-  padding: 20px 23px;
-  border: 1px solid var(--color-line);
-  border-radius: 12px;
-  background: var(--color-white);
-  box-shadow: var(--shadow-panel);
   overflow-wrap: anywhere;
 }
 
 .panel h2,
 .panel h3 {
   margin: 0;
-  font:
-    700 14px 'Manrope',
-    sans-serif;
+  font: 700 24px/1.2 var(--font-sans);
 }
 
 .panel p {
@@ -21,8 +13,7 @@
 }
 
 .controls,
-.resultStatus,
-.findingHeading {
+.resultStatus {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
@@ -34,14 +25,56 @@
   margin-top: 16px;
 }
 
-.fileInput span {
-  display: block;
-  margin-bottom: 5px;
-  font-weight: 600;
+.dropZone {
+  position: relative;
+  display: grid;
+  width: 100%;
+  min-height: 259px;
+  place-items: center;
+  padding: 85px 24px 24px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-panel);
 }
 
-.fileInput input {
-  max-width: 100%;
+.dropZone:is(:focus-within, :hover) {
+  border-color: var(--color-green);
+}
+
+.dropZone input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.browse {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  display: grid;
+  min-height: 44px;
+  place-items: center;
+  padding: 8px 16px;
+  border-radius: var(--radius-control);
+  background: var(--color-green);
+  color: white;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.dropCopy {
+  display: grid;
+  gap: 4px;
+  color: var(--color-muted);
+  text-align: center;
+  pointer-events: none;
+}
+
+.dropCopy strong {
+  color: var(--color-ink);
+  font-size: 20px;
 }
 
 .controls button {
@@ -96,37 +129,4 @@
 .details ul {
   margin: 7px 0;
   padding-left: 20px;
-}
-
-.findings {
-  display: grid;
-  gap: 10px;
-  margin: 10px 0;
-  padding: 0;
-  list-style: none;
-}
-
-.findings li {
-  padding: 12px;
-  border: 1px solid var(--color-line);
-  border-radius: 8px;
-}
-
-.findingHeading {
-  margin-bottom: 6px;
-}
-
-.findingHeading span {
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--color-green-pale);
-  font-size: 11px;
-  text-transform: uppercase;
-}
-
-.findings pre {
-  padding: 8px;
-  border-radius: 4px;
-  background: var(--color-background);
-  white-space: pre-wrap;
 }

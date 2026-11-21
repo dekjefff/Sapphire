@@ -1,0 +1,396 @@
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('../fonts/inter-400.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url('../fonts/inter-600.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: Inter;
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('../fonts/inter-700.ttf') format('truetype');
+}
+
+:root {
+  --sap-ink: #20252b;
+  --sap-muted: #606973;
+  --sap-action: #1b754d;
+  --sap-action-hover: #155e3e;
+  --sap-paper: #f6f7f8;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body#keycloak-bg,
+.pf-v5-c-login {
+  color: var(--sap-ink);
+  background: var(--sap-paper);
+  font-family: Inter, 'Segoe UI', Arial, sans-serif;
+}
+
+.pf-v5-c-login {
+  display: grid;
+  grid-template-columns: minmax(0, 690px) minmax(0, 440px);
+  justify-content: space-between;
+  column-gap: clamp(32px, 7vw, 100px);
+  min-height: 100dvh;
+  max-width: 1440px;
+  margin-inline: auto;
+  padding: 32px clamp(24px, 12.36vw, 178px) 32px 32px;
+}
+
+.pf-v5-c-login::before {
+  content: '';
+  align-self: stretch;
+  min-height: min(680px, 76dvh);
+  border-radius: 24px;
+  background: url('../img/sapphire-hunt.webp') center / contain no-repeat;
+}
+
+.pf-v5-c-login > .pf-v5-c-login__container {
+  display: block;
+  align-self: center;
+  width: min(100%, 440px);
+  margin-inline: auto;
+  padding-inline: 0;
+}
+
+#kc-header {
+  margin: 0;
+}
+
+#kc-header-wrapper {
+  padding: 0 0 24px;
+  color: var(--sap-action);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+#kc-header-wrapper.pf-v5-c-brand {
+  --pf-v5-c-brand--Color: var(--sap-action);
+  color: var(--sap-action) !important;
+  margin: 0;
+  text-align: left;
+}
+
+#kc-header-wrapper::before {
+  content: '';
+  display: inline-block;
+  width: 44px;
+  height: 44px;
+  margin-inline-end: 16px;
+  background: url('../img/sapphire-logo.png') center / contain no-repeat;
+  vertical-align: middle;
+}
+
+.pf-v5-c-login__main {
+  overflow: visible;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pf-v5-c-login__main-header {
+  border-top: 0;
+  padding-top: 6px;
+}
+
+.pf-v5-c-login__main-header,
+.pf-v5-c-login__main-body,
+.pf-v5-c-login__main-footer {
+  padding-inline: 0;
+}
+
+#kc-page-title {
+  margin: 0;
+  color: var(--sap-ink);
+  font-size: clamp(28px, 3vw, 36px);
+  font-weight: 700;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+}
+
+#kc-form,
+#kc-register-form,
+#kc-reset-password-form,
+#kc-passwd-update-form,
+#kc-otp-login-form {
+  margin-top: 0;
+}
+
+.pf-v5-c-form__label {
+  color: var(--sap-ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pf-v5-c-form-control,
+.pf-v5-c-input-group:has(.pf-m-control[aria-controls]) {
+  --sap-field-border: #dfe3e7;
+  --sap-field-focus: #38a176;
+  min-height: 44px;
+  border: 1px solid var(--sap-field-border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--sap-ink);
+  font-size: 14px;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.pf-v5-c-form-control {
+  display: flex;
+  align-items: stretch;
+  padding: 0;
+  overflow: hidden;
+}
+
+.pf-v5-c-form-control::before,
+.pf-v5-c-form-control::after {
+  border: 0;
+}
+
+.pf-v5-c-form-control > input {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 45px;
+  padding: 10px 13px;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+  background: transparent;
+  color: var(--sap-ink);
+  font-size: 15px;
+  line-height: 24px;
+}
+
+.pf-v5-c-form-control > input:autofill {
+  box-shadow: 0 0 0 100px #fff inset;
+  -webkit-text-fill-color: var(--sap-ink);
+  caret-color: var(--sap-ink);
+}
+
+.pf-v5-c-form-control:has(> input[aria-invalid='true']),
+.pf-v5-c-input-group:has(.pf-m-control[aria-controls]):has(input[aria-invalid='true']) {
+  --sap-field-border: #b84744;
+  --sap-field-focus: #b84744;
+}
+
+.pf-v5-c-form-control:focus-within,
+.pf-v5-c-input-group:has(.pf-m-control[aria-controls]):focus-within {
+  border-color: var(--sap-field-focus);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--sap-field-focus) 26%, transparent);
+}
+
+.pf-v5-c-input-group:has(.pf-m-control[aria-controls]) .pf-v5-c-form-control {
+  min-height: 45px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.pf-v5-c-input-group .pf-m-control[aria-controls] {
+  display: grid;
+  min-width: 44px;
+  min-height: 45px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--sap-muted);
+}
+
+.pf-v5-c-input-group .pf-m-control[aria-controls]::after {
+  border: 0;
+}
+
+.pf-v5-c-input-group .pf-m-control[aria-controls]:hover {
+  color: var(--sap-action);
+}
+
+.pf-v5-c-input-group .pf-m-control[aria-controls]:focus-visible {
+  outline: 2px solid var(--sap-action);
+  outline-offset: -4px;
+}
+
+.pf-v5-c-button.pf-m-primary,
+button[type='submit'],
+input[type='submit'] {
+  min-height: 44px;
+  padding: 8px 16px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--sap-action);
+  box-shadow: none;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 650;
+  transition: transform 160ms ease, box-shadow 160ms ease, background 160ms ease;
+}
+
+.pf-v5-c-button.pf-m-primary:hover,
+button[type='submit']:hover,
+input[type='submit']:hover {
+  background: var(--sap-action-hover);
+}
+
+.pf-v5-c-button:focus-visible,
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid #387c54;
+  outline-offset: 3px;
+}
+
+a,
+#kc-registration a,
+#kc-form-options a {
+  color: var(--sap-action);
+  font-weight: 600;
+  text-decoration-color: #70a384;
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--sap-action-hover);
+}
+
+#kc-reset-password-form a.pf-m-secondary,
+#kc-register-form #kc-form-options a {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 47px;
+  padding: 10px 16px;
+  border: 1px solid #d1dfd5;
+  border-radius: 12px;
+  background: #fff;
+  color: var(--sap-action);
+  font-size: 14px;
+  font-weight: 650;
+  text-align: center;
+  text-decoration: none;
+}
+
+#kc-reset-password-form a.pf-m-secondary::after {
+  border: 0;
+}
+
+#kc-reset-password-form a.pf-m-secondary:hover,
+#kc-register-form #kc-form-options a:hover {
+  background: #edf5ef;
+  color: var(--sap-action-hover);
+}
+
+#kc-form-options,
+#kc-registration,
+.instruction {
+  color: var(--sap-muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.pf-v5-c-login__main-footer-band {
+  border-top: 0;
+}
+
+#kc-registration {
+  text-align: left;
+}
+
+#kc-login,
+#kc-register-form input[type='submit'] {
+  width: auto;
+}
+
+.alert,
+.pf-v5-c-alert {
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid #f0dfc8;
+  border-radius: 11px;
+  background: #fff8ed;
+  color: #76532a;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.alert-error,
+.pf-v5-c-alert.pf-m-danger {
+  border-color: #f0d2d1;
+  background: #fff3f2;
+  color: #8a3e39;
+}
+
+.alert-success,
+.pf-v5-c-alert.pf-m-success {
+  border-color: #d6e8d8;
+  background: #f0f8f0;
+  color: #3e6949;
+}
+
+.pf-v5-c-check__label,
+.checkbox label {
+  color: var(--sap-muted);
+  font-weight: 400;
+}
+
+@media (max-width: 760px) {
+  .pf-v5-c-login {
+    position: relative;
+    isolation: isolate;
+    grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+    place-items: center;
+    padding: 28px 18px;
+  }
+
+  .pf-v5-c-login::before {
+    position: absolute;
+    z-index: -1;
+    inset: 0;
+    border-radius: 0;
+    background:
+      linear-gradient(155deg, #163e2c25, transparent 55%, #214b385e),
+      #a8c8aa url('../img/sapphire-hunt.webp') center / cover no-repeat;
+  }
+
+  .pf-v5-c-login > .pf-v5-c-login__container {
+    width: min(100%, 390px);
+    padding: clamp(24px, 7vw, 40px);
+    border: 1px solid #fff9;
+    border-radius: 28px;
+    background: #f6fbf3e8;
+    box-shadow: 0 20px 56px #183e3440;
+    backdrop-filter: blur(16px);
+  }
+
+  #kc-page-title {
+    font-size: 29px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

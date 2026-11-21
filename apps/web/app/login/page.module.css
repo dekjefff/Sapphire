@@ -1,46 +1,82 @@
 .page {
   display: grid;
   min-height: 100dvh;
-  align-items: center;
+  place-items: center;
   padding: 24px;
+  background: var(--color-canvas);
+  color: var(--color-ink);
 }
 
 .panel {
-  width: min(100%, 410px);
-  margin-inline: auto;
-  padding: 32px;
+  width: min(100%, 435px);
+  padding: clamp(24px, 6vw, 40px);
   border: 1px solid var(--color-line);
-  border-radius: 16px;
-  background: var(--color-white);
-  box-shadow: var(--shadow-panel);
+  border-radius: var(--radius-panel);
+  background: #fff;
 }
 
-.brand {
-  color: var(--color-green);
-  font-weight: 700;
+.panel h1 {
+  margin: 14px 0 0;
+  font-size: 25px;
+  letter-spacing: -0.04em;
 }
 
-.button {
-  width: 100%;
-  margin-top: 14px;
-  padding: 12px 16px;
-  border: 0;
-  border-radius: 8px;
+.panel p {
+  margin: 12px 0 0;
+  color: var(--color-muted);
+  line-height: 1.55;
+}
+
+.panel form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.panel button {
+  min-height: 44px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-green);
+  border-radius: var(--radius-control);
   background: var(--color-green);
-  color: var(--color-white);
-  font-weight: 700;
+  color: white;
+  font-weight: 650;
   cursor: pointer;
 }
 
-.note {
-  margin-bottom: 0;
-  color: #52645d;
-  font-size: 13px;
+.panel button + button {
+  border-color: #d1dfd5;
+  background: white;
+  color: var(--color-green);
+}
+
+.panel button:focus-visible {
+  outline: 2px solid var(--color-green-accent);
+  outline-offset: 3px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  color: var(--color-green);
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.brand::before {
+  width: 44px;
+  height: 44px;
+  flex: none;
+  background: url('/sapphire-logo.png') center / contain no-repeat;
+  content: '';
 }
 
 .notice {
-  padding: 12px;
-  border-radius: 8px;
-  background: #fff2df;
-  color: #703d08;
+  color: #87511d;
+}
+
+.note {
+  font-size: 13px;
 }
