@@ -5,6 +5,7 @@ import type { AssessmentInput } from '@/lib/types';
 import styles from './new-assessment-form.module.css';
 
 interface NewAssessmentFormProps {
+  reviewProvider: NonNullable<AssessmentInput['ai_review_provider']>;
   disabled: boolean;
   error: string;
   message: string;
@@ -12,175 +13,301 @@ interface NewAssessmentFormProps {
 }
 
 const initialForm: AssessmentInput = {
-  project_name: 'Juice Shop demo',
-  repository_path: '/workspace',
-  target_url: 'http://juiceshop:3000',
+  project_name: '',
+  repository_path: '',
+  target_url: '',
   source_type: 'zip',
   runtime_discovery_authorized: false,
 };
 
-export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAssessmentFormProps) {
+export function NewAssessmentForm({
+  reviewProvider,
+  disabled,
+  error,
+  message,
+  onCreate,
+}: NewAssessmentFormProps) {
   const [form, setForm] = useState(initialForm);
-  const [discoveryProfile, setDiscoveryProfile] = useState<'none' | 'juiceshop'>('none');
+  const [step, setStep] = useState<'source' | 'runtime' | 'ai'>('source');
+  const [discoveryProfile, setDiscoveryProfile] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const sourceOnly =
-    form.source_type === 'zip' && form.ai_review_authorized && discoveryProfile === 'none';
+  const [uploadError, setUploadError] = useState('');
+  const [draggingZip, setDraggingZip] = useState(false);
+  const labOrigin = 'http://juiceshop:3000';
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (submitting) return;
+    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
+    if (step === 'source' && (submitter?.value === 'runtime' || submitter?.value === 'ai')) {
+      setStep(submitter.value);
+      return;
+    }
+
+    if (disabled) return;
+    const runtime = step === 'runtime';
+    const ai = step === 'ai' && form.source_type === 'zip';
+    if (
+      runtime &&
+      (!discoveryProfile || !form.runtime_discovery_authorized || form.target_url !== labOrigin)
+    )
+      return;
+    if (step === 'ai' && (!ai || !form.ai_review_authorized)) return;
+
     setSubmitting(true);
     try {
-      await onCreate(sourceOnly ? { ...form, target_url: '' } : form);
+      await onCreate({
+        ...form,
+        target_url: runtime ? form.target_url : ai ? '' : labOrigin,
+        runtime_discovery_authorized: runtime,
+        ai_review_authorized: ai,
+        ai_review_provider: ai ? reviewProvider : undefined,
+      });
     } finally {
       setSubmitting(false);
     }
   }
 
+  function backToSource() {
+    setForm({ ...form, runtime_discovery_authorized: false, ai_review_authorized: false });
+    setStep('source');
+  }
+
+  function updateZip(input: HTMLInputElement, files: FileList | null) {
+    const file = files?.[0];
+    let issue = '';
+    if (files && files.length > 1) issue = 'Choose one ZIP archive.';
+    else if (file && !/\.zip$/i.test(file.name)) issue = 'Choose a ZIP archive.';
+    else if (file && file.size > 100 * 1024 * 1024) issue = 'The ZIP must be 100 MB or smaller.';
+
+    if (issue) input.value = '';
+    else if (files && files !== input.files) input.files = files;
+    input.setCustomValidity(issue);
+    setUploadError(issue);
+    setForm((current) => ({ ...current, source_file: issue ? undefined : file }));
+  }
+
   return (
-    <section className={styles.panel} aria-labelledby="new-assessment-title">
-      <div className={styles.sectionHead}>
-        <div className={styles.step} aria-hidden="true">
-          01
-        </div>
-        <div>
-          <h2 id="new-assessment-title">New assessment</h2>
-          <p>Choose a local repository folder or a ZIP archive.</p>
-        </div>
-      </div>
+    <section
+      className={styles.panel}
+      data-step={step}
+      aria-labelledby={step === 'source' ? 'assessment-source-title' : 'new-assessment-title'}
+    >
+      {step !== 'source' && (
+        <h2 className={styles.sectionHeading} id="new-assessment-title">
+          {step === 'runtime' ? 'Runtime discovery' : 'AI code review'}
+        </h2>
+      )}
 
       <form onSubmit={handleSubmit}>
-        <label>
-          Project name
-          <input
-            required
-            maxLength={120}
-            value={form.project_name}
-            onChange={(event) => setForm({ ...form, project_name: event.target.value })}
-            placeholder="e.g. Payments service"
-          />
-        </label>
-        <label>
-          Source type
-          <select
-            value={form.source_type}
-            onChange={(event) =>
-              setForm({
-                ...form,
-                source_type: event.target.value as 'local_path' | 'zip',
-                source_file: undefined,
-                ai_review_authorized: false,
-              })
-            }
-          >
-            <option value="local_path">Mounted local repository</option>
-            <option value="zip">ZIP upload (up to 100 MB)</option>
-          </select>
-        </label>
-        {form.source_type === 'local_path' ? (
+        <fieldset
+          className={styles.fields}
+          hidden={step !== 'source'}
+          disabled={step !== 'source' || submitting}
+        >
           <label>
-            Repository path
+            <span className={styles.sectionHeading}>Project name</span>
             <input
               required
-              maxLength={2048}
-              value={form.repository_path}
-              onChange={(event) => setForm({ ...form, repository_path: event.target.value })}
-              placeholder="/workspace/my-repository"
+              maxLength={120}
+              value={form.project_name}
+              onChange={(event) => setForm({ ...form, project_name: event.target.value })}
+              placeholder="e.g. Payments service"
             />
-            <span className={styles.hint}>
-              Use an absolute path inside a configured workspace root mounted into the API and
-              worker.
-            </span>
           </label>
-        ) : (
-          <label>
-            Repository ZIP
-            <input
-              required
-              type="file"
-              accept=".zip,application/zip"
-              onChange={(event) => setForm({ ...form, source_file: event.target.files?.[0] })}
-            />
-            <span className={styles.hint}>
-              Include source files and manifests. Leave out node_modules, .git, generated folders
-              (.next, dist, build, vendor), symlinks, and junctions. Known generated/dependency
-              folders and recognized links are skipped before extraction and reported with a bounded
-              list and total count; a truncated list is marked. Traversal, special entries,
-              malformed archives, and inputs over 100 MB ZIP, 250 MB expanded, 20,000 files, or 10
-              MB/file are rejected.
-            </span>
-          </label>
+          <div className={styles.sourceHeader}>
+            <h2 className={styles.sectionHeading} id="assessment-source-title">
+              Project source
+            </h2>
+            <div className={styles.sourceToggle} role="group" aria-label="Source type">
+              {(['zip', 'local_path'] as const).map((source) => (
+                <button
+                  key={source}
+                  type="button"
+                  aria-pressed={form.source_type === source}
+                  onClick={() => {
+                    if (form.source_type === source) return;
+                    setUploadError('');
+                    setDraggingZip(false);
+                    setForm({
+                      ...form,
+                      source_type: source,
+                      source_file: undefined,
+                      ai_review_authorized: false,
+                    });
+                  }}
+                >
+                  {source === 'zip' ? 'ZIP upload' : 'Mounted repository'}
+                </button>
+              ))}
+            </div>
+          </div>
+          {form.source_type === 'local_path' ? (
+            <label>
+              Repository path
+              <input
+                required
+                maxLength={2048}
+                value={form.repository_path}
+                onChange={(event) => setForm({ ...form, repository_path: event.target.value })}
+                placeholder="/workspace/my-repository"
+              />
+              <span className={styles.guidance}>
+                Use an absolute path inside a configured workspace root mounted into the API and
+                worker.
+              </span>
+            </label>
+          ) : (
+            <div className={styles.uploadField}>
+              <label htmlFor="assessment-zip">Repository ZIP</label>
+              <div className={styles.uploadBox} data-dragging={draggingZip && !submitting}>
+                <input
+                  id="assessment-zip"
+                  className={styles.fileInput}
+                  aria-describedby={
+                    uploadError
+                      ? 'assessment-zip-error assessment-zip-guidance'
+                      : 'assessment-zip-guidance'
+                  }
+                  aria-invalid={Boolean(uploadError)}
+                  required
+                  type="file"
+                  accept=".zip,application/zip"
+                  onChange={(event) => updateZip(event.currentTarget, event.currentTarget.files)}
+                  onDragOver={(event) => {
+                    if (!event.dataTransfer.types.includes('Files')) return;
+                    event.preventDefault();
+                    const enabled = !event.currentTarget.matches(':disabled');
+                    event.dataTransfer.dropEffect = enabled ? 'copy' : 'none';
+                    setDraggingZip(enabled);
+                  }}
+                  onDragLeave={() => setDraggingZip(false)}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDraggingZip(false);
+                    const { files } = event.dataTransfer;
+                    if (files.length > 0 && !event.currentTarget.matches(':disabled')) {
+                      updateZip(event.currentTarget, files);
+                    }
+                  }}
+                />
+                <span className={styles.uploadPrompt} aria-hidden="true">
+                  {draggingZip && !submitting ? (
+                    <strong>Release to drop the ZIP</strong>
+                  ) : form.source_file ? (
+                    <strong>{form.source_file.name}</strong>
+                  ) : (
+                    <strong>Drop your project ZIP here</strong>
+                  )}
+                  <span>
+                    {draggingZip
+                      ? 'One ZIP, up to 100 MB'
+                      : form.source_file
+                        ? 'ZIP selected'
+                        : 'One ZIP, up to 100 MB'}
+                  </span>
+                  {!draggingZip && (
+                    <span className={styles.browse}>
+                      {form.source_file ? 'Replace file' : 'Browse files'}
+                    </span>
+                  )}
+                </span>
+              </div>
+              {uploadError && (
+                <p
+                  className={`${styles.notice} ${styles.error}`}
+                  id="assessment-zip-error"
+                  role="alert"
+                >
+                  {uploadError}
+                </p>
+              )}
+              <div className={styles.guidance} id="assessment-zip-guidance">
+                <strong>ZIP contents</strong>
+                Include source files and manifests. Leave out dependencies, build output, Git
+                metadata, and links.
+                <details className={styles.archiveDetails}>
+                  <summary>Archive limits and exclusions</summary>
+                  <p>
+                    Omit folders such as node_modules, .git, .next, dist, build, and vendor, plus
+                    symlinks and junctions. Recognized items are skipped and reported. The ZIP can
+                    contain up to 250 MB expanded, 20,000 files, and 10 MB per file. Malformed
+                    archives, traversal paths, and special entries are rejected.
+                  </p>
+                </details>
+              </div>
+            </div>
+          )}
+        </fieldset>
+        {step === 'runtime' && (
+          <fieldset className={styles.fields} disabled={submitting}>
+            <label>
+              Runtime discovery profile
+              <select
+                required
+                value={discoveryProfile}
+                onChange={(event) => {
+                  const profile = event.target.value;
+                  setDiscoveryProfile(profile);
+                  setForm({
+                    ...form,
+                    target_url: profile ? labOrigin : '',
+                    runtime_discovery_authorized: false,
+                  });
+                }}
+              >
+                <option value="">Choose a profile</option>
+                <option value="juiceshop">Isolated local Juice Shop</option>
+              </select>
+              <span className={styles.guidance}>
+                This profile uses bounded, read-only discovery on the configured local origin.
+              </span>
+            </label>
+            {discoveryProfile && (
+              <label>
+                Target URL
+                <input type="url" value={form.target_url} readOnly />
+              </label>
+            )}
+            <label className={styles.attestation}>
+              <input
+                type="checkbox"
+                required
+                checked={form.runtime_discovery_authorized}
+                disabled={!discoveryProfile}
+                onChange={(event) =>
+                  setForm({ ...form, runtime_discovery_authorized: event.target.checked })
+                }
+              />
+              <span>
+                I am authorized to run bounded discovery against this exact isolated local origin.
+              </span>
+            </label>
+          </fieldset>
         )}
-        {!sourceOnly && (
-          <label>
-            Target URL
-            <input
-              required
-              type="url"
-              value={discoveryProfile === 'juiceshop' ? 'http://juiceshop:3000' : form.target_url}
-              readOnly={discoveryProfile === 'juiceshop'}
-              onChange={(event) => setForm({ ...form, target_url: event.target.value })}
-              placeholder="http://juiceshop:3000"
-            />
-            <span className={styles.hint}>
-              Enter the exact target origin you are authorized to assess. Runtime discovery is
-              limited to the selected exact profile; no public or third-party targets are supported.
-            </span>
-          </label>
-        )}
-        <label>
-          Runtime discovery profile
-          <select
-            value={discoveryProfile}
-            onChange={(event) => {
-              const profile = event.target.value as 'none' | 'juiceshop';
-              setDiscoveryProfile(profile);
-              setForm({
-                ...form,
-                target_url: profile === 'juiceshop' ? 'http://juiceshop:3000' : form.target_url,
-                runtime_discovery_authorized: false,
-              });
-            }}
-          >
-            <option value="none">Static intake only (default)</option>
-            <option value="juiceshop">Isolated local Juice Shop · http://juiceshop:3000</option>
-          </select>
-          <span className={styles.hint}>
-            The local-test profile is a whole-origin HTTP scope with GET only. Requests use fixed
-            limits: depth 3, up to 500 URLs, 1 request/second per host, 1 MiB per response, 50 MiB
-            total, and 120 seconds. Redirects are not followed; login, cookies, forms, and
-            state-changing requests are excluded.
-          </span>
-        </label>
-        <label className={styles.attestation}>
-          <input
-            type="checkbox"
-            checked={form.runtime_discovery_authorized}
-            disabled={discoveryProfile !== 'juiceshop'}
-            onChange={(event) =>
-              setForm({ ...form, runtime_discovery_authorized: event.target.checked })
-            }
-          />
-          <span>
-            I am authorized to run this bounded discovery against the exact target shown above. I
-            confirm this is the isolated local Juice Shop profile and will not test a public or
-            third-party target.
-          </span>
-        </label>
-
-        {form.source_type === 'zip' && (
-          <label className={styles.attestation}>
-            <input
-              type="checkbox"
-              checked={form.ai_review_authorized === true}
-              onChange={(event) => setForm({ ...form, ai_review_authorized: event.target.checked })}
-            />
-            <span>
-              Include AI Code Review after static scanning. I approve sending the project’s
-              supported source files and scanner summaries to Groq and saving the report with this
-              assessment. Sapphire keeps a temporary copy of the ZIP for up to 48 hours so the
-              review can continue across processing windows.
-            </span>
-          </label>
+        {step === 'ai' && (
+          <>
+            <p className={styles.guidance}>
+              Review what source data is sent to the configured AI provider before continuing.
+            </p>
+            <label className={styles.attestation}>
+              <input
+                type="checkbox"
+                required
+                disabled={submitting}
+                checked={form.ai_review_authorized === true}
+                onChange={(event) =>
+                  setForm({ ...form, ai_review_authorized: event.target.checked })
+                }
+              />
+              <span>
+                I approve sending supported project source files and scanner summaries to{' '}
+                {reviewProvider === 'qwencloud' ? 'QwenCloud (Singapore)' : 'Groq'} and saving the
+                report with this assessment. Sapphire may keep a temporary copy of the ZIP for up to
+                48 hours so the review can continue across processing windows.
+              </span>
+            </label>
+          </>
         )}
 
         {error && (
@@ -193,14 +320,66 @@ export function NewAssessmentForm({ disabled, error, message, onCreate }: NewAss
             {message}
           </div>
         )}
-        <button className={styles.primaryButton} disabled={submitting || disabled} type="submit">
-          {submitting
-            ? 'Creating…'
-            : form.ai_review_authorized
-              ? 'Start project review'
-              : 'Create assessment'}
-          <span aria-hidden="true">→</span>
-        </button>
+        <div className={styles.actions}>
+          {step === 'source' ? (
+            <>
+              <button
+                className={styles.secondaryButton}
+                type="submit"
+                value="runtime"
+                disabled={submitting}
+              >
+                Include URL discovery
+              </button>
+              <button
+                className={styles.secondaryButton}
+                type="submit"
+                value="ai"
+                disabled={submitting || form.source_type !== 'zip'}
+              >
+                Prefer AI code review
+              </button>
+              <button
+                className={styles.primaryButton}
+                type="submit"
+                value="source"
+                disabled={submitting || disabled}
+              >
+                {submitting ? 'Creating…' : 'Start assessment only'}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className={styles.secondaryButton}
+                type="button"
+                disabled={submitting}
+                onClick={(event) => {
+                  event.preventDefault();
+                  backToSource();
+                }}
+              >
+                Back
+              </button>
+              <button
+                className={styles.primaryButton}
+                type="submit"
+                disabled={submitting || disabled}
+              >
+                {submitting
+                  ? 'Creating…'
+                  : step === 'runtime'
+                    ? 'Start with URL discovery'
+                    : 'Start AI code review'}
+              </button>
+            </>
+          )}
+        </div>
+        {step === 'source' && form.source_type !== 'zip' && (
+          <p className={`${styles.guidance} ${styles.warning}`}>
+            AI code review requires a ZIP upload.
+          </p>
+        )}
       </form>
     </section>
   );

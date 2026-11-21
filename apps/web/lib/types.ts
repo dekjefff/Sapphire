@@ -53,6 +53,7 @@ export interface AssessmentInput {
   source_file?: File;
   runtime_discovery_authorized: boolean;
   ai_review_authorized?: boolean;
+  ai_review_provider?: "groq" | "qwencloud";
 }
 
 export type ProjectReviewStatus =
@@ -80,6 +81,7 @@ export interface ProjectReviewDetail {
     model: string;
     total_files: number;
     excluded_files: number;
+    reviewed_files?: string[];
     pending_files: { file: string; reason: string }[];
     findings: {
       file: string;

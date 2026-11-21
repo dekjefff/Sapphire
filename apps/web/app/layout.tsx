@@ -4,6 +4,7 @@ import './globals.css';
 export const metadata: Metadata = {
   title: 'Sapphire | Assessments',
   description: 'Local assessment workspace',
+  icons: { icon: '/sapphire-logo.png' },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
