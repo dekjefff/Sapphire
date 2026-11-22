@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { z } from "zod";
+import { evidenceContext } from "./review-evidence-context.js";
 
 export const maxReviewFiles = 8;
 const maxSourceBytes = 8192;
@@ -192,9 +193,13 @@ export async function reviewCode(projectDirectory: string, reportFile: string, f
   if (!result.success) return incompleteCodeReview("invalid_model_report", dependencyAudit);
   const findings = [];
   for (const finding of result.data.findings) {
-    const evidence = sources.get(finding.file)?.[finding.line - 1]?.trim();
-    if (!evidence) return incompleteCodeReview("invalid_model_citation", dependencyAudit);
-    findings.push({ ...finding, evidence: evidence.slice(0, 500) });
+    const lines = sources.get(finding.file);
+    const evidence = lines?.[finding.line - 1]?.trim();
+    if (!lines || !evidence) return incompleteCodeReview("invalid_model_citation", dependencyAudit);
+    findings.push({
+      ...finding, evidence: evidence.slice(0, 500),
+      evidence_context: evidenceContext(lines, finding.line),
+    });
   }
   return {
     schema_version: 1,

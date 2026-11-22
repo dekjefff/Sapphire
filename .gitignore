@@ -40,3 +40,6 @@ next-env.d.ts
 # Sapphire local state
 /artifacts/
 /auth-users.local
+
+# Sapphire account database
+.sapphire-auth/

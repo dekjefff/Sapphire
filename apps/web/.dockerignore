@@ -2,3 +2,6 @@ node_modules
 .next
 .git
 npm-debug.log*
+.sapphire-auth
+.env
+.env.*

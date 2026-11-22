@@ -82,33 +82,6 @@
   margin: 5px 0 0;
 }
 
-.status,
-.severity {
-  padding: 4px 8px;
-  border-radius: 99px;
-  background: #eef1f3;
-  color: #3c4851;
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.status[data-status='completed'],
-.status[data-status='running'] {
-  background: var(--color-green-soft);
-  color: var(--color-green-hover);
-}
-
-.status:is([data-status='incomplete'], [data-status='partial']),
-.severity:is([data-level='high'], [data-level='medium']) {
-  background: #fff1de;
-  color: #804510;
-}
-
-.severity[data-level='critical'] {
-  background: #ffebec;
-  color: #9b3030;
-}
-
 .queue {
   display: grid;
   gap: 8px;
@@ -157,9 +130,20 @@
   border-radius: 50%;
 }
 
-.queueIcon[data-active='true'] {
-  background: url('/review-queued.svg') center / 22px 22px no-repeat;
+.queueIcon[data-active='true']::before {
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  border: 2px solid #d4d4d4;
+  border-top-color: #525252;
+  border-radius: 50%;
   animation: ring-spin 1.1s linear infinite;
+  content: '';
+}
+
+.queueIcon[data-status='partial']::before {
+  border-color: #ebd67d;
+  border-top-color: #947500;
 }
 
 .queueIcon[data-status='completed'] {
@@ -224,8 +208,7 @@ button[aria-expanded='true'] .chevron {
   cursor: default;
 }
 
-.filters button,
-.severity {
+.filters button {
   text-transform: capitalize;
 }
 
@@ -252,17 +235,9 @@ button[aria-expanded='true'] .chevron {
 }
 
 .finding summary > span:last-child,
-.finding code {
+.finding summary code {
   display: block;
   margin-top: 6px;
-}
-
-.finding pre {
-  padding: 12px;
-  border-radius: 8px;
-  background: #f3f6f4;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
 }
 
 .workspace :is(button, a, summary):focus-visible {
@@ -295,10 +270,26 @@ button[aria-expanded='true'] .chevron {
 
 @media (prefers-reduced-motion: reduce) {
   .queueRow,
-  .queueIcon,
+  .queueIcon[data-active='true']::before,
   .queueDetail,
   .chevron {
     animation: none;
     transition: none;
   }
+}
+
+.reviewActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.reviewActions [data-variant='stop'] {
+  border-color: #dcb7b7;
+  color: #912b2b;
+}
+
+.reviewActions [data-variant='stop']:hover:not(:disabled) {
+  background: #fff1f1;
 }

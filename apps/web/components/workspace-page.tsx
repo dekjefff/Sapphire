@@ -1,41 +1,35 @@
+import { createHash } from 'node:crypto';
 import { redirect } from 'next/navigation';
 import { readOperatorSession, signOut } from '@/auth';
 import { Dashboard } from '@/components/dashboard';
+import { AccountMenu } from './account-menu';
 
 export async function WorkspacePage({
   section,
   reviewId,
 }: {
-  section?: 'recent' | 'new' | 'review';
+  section?: 'overview' | 'recent' | 'new' | 'review' | 'url-checks';
   reviewId?: string;
 }) {
   const session = await readOperatorSession();
   if (!session?.user) redirect('/login');
+  const urlCheckScope = createHash('sha256')
+    .update(session.user.email ?? session.user.name ?? 'local')
+    .digest('hex');
 
   return (
     <Dashboard
       initialSection={section}
+      urlCheckScope={urlCheckScope}
       reviewId={reviewId}
-      reviewProvider="groq"
       account={
-        <form
-          className="account-bar"
-          action={async () => {
+        <AccountMenu
+          name={session.user.name?.trim() || session.user.email?.trim() || 'Sapphire account'}
+          signOutAction={async () => {
             'use server';
-            await signOut({ redirect: false });
-            const logout = new URL(
-              process.env.AUTH_KEYCLOAK_ISSUER + '/protocol/openid-connect/logout',
-            );
-            logout.searchParams.set('client_id', process.env.AUTH_KEYCLOAK_ID!);
-            logout.searchParams.set(
-              'post_logout_redirect_uri',
-              new URL('/login', process.env.AUTH_URL).href,
-            );
-            redirect(logout.href);
+            await signOut({ redirectTo: '/login' });
           }}
-        >
-          <button type="submit">Sign out</button>
-        </form>
+        />
       }
     />
   );

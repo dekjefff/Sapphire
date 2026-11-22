@@ -1,3 +1,6 @@
+import { projectReviewCatalog, projectReviewKeys, type ProjectReviewProvider } from "./project-review-models.js";
+import { workspaceOverview } from "./workspace-overview.js";
+import { registerWorkspaceAccess } from "./workspace-access.js";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
@@ -22,12 +25,13 @@ import { registerPassiveEvidence } from "./passive-evidence-api.js";
 import { createPassiveEvidenceStore } from "./passive-evidence-store.js";
 
 const app = Fastify({ logger: true });
+registerWorkspaceAccess(app, process.env.SAPPHIRE_AI_REVIEW_PROXY_TOKEN?.trim());
 const redis = createClient({ url: process.env.REDIS_URL ?? "redis://redis:6379/0" });
 redis.on("error", (error) => app.log.error({ err: error }, "Redis client error"));
 const artifactDir = process.env.ARTIFACT_DIR ?? "/artifacts";
 const origins = (process.env.CORS_ORIGINS ?? "http://localhost:3000").split(",").map((v) => v.trim()).filter(Boolean);
 await app.register(cors, { origin: origins, methods: ["GET", "POST"], allowedHeaders: ["Content-Type"] });
-await app.register(multipart, { limits: { files: 1, fileSize: 100 * 1024 * 1024, fields: 4, parts: 5 } });
+await app.register(multipart, { limits: { files: 1, fileSize: 100 * 1024 * 1024, fields: 5, parts: 6 } });
 
 const zapStore: ZapImportStore = {
   async save(id, report, sourceSha256) {
@@ -51,6 +55,8 @@ const captureKey = captureKeyHex ? Buffer.from(captureKeyHex, "hex") : undefined
 await app.register(async (scope) => registerPassiveEvidence(scope, createPassiveEvidenceStore(pool), captureKey));
 
 const groqKey = process.env.GROQ_API_KEY?.trim();
+const projectReviewProvider = projectReviewCatalog().preferred;
+
 const npmCli = groqKey ? findNpmCli() : undefined;
 const dashboardModel = groqKey && npmCli ? groqReview(groqKey) : undefined;
 const reviewEvent = "ai_code_review.finished";
@@ -64,6 +70,27 @@ registerDashboardCodeReview(app, {
       [assessmentId],
     );
     return result.rows[0] ?? null;
+  },
+  async controlProjectReview(assessmentId, action) {
+    const result = await pool.query(`
+      WITH changed AS (
+        UPDATE project_code_reviews
+        SET pause_requested=($2='pause'), cancel_requested=($2='stop'),
+            reason=CASE WHEN $2='resume' AND reason='paused' THEN NULL ELSE reason END,
+            updated_at=now()
+        WHERE assessment_id=$1 AND NOT cancel_requested AND (
+          ($2='pause' AND NOT pause_requested AND status IN ('waiting_for_scans','queued','running')) OR
+          ($2='resume' AND pause_requested AND status IN ('waiting_for_scans','queued')
+             AND consent_at > now() - interval '48 hours') OR
+          ($2='stop' AND status IN ('waiting_for_scans','queued','running'))
+        )
+        RETURNING assessment_id
+      )
+      INSERT INTO audit_events (assessment_id,actor,event_type,details)
+      SELECT assessment_id,'dashboard','ai_code_review.control',jsonb_build_object('action',$2::text)
+      FROM changed
+    `, [assessmentId, action]);
+    return result.rowCount === 1;
   },
   run: dashboardModel && npmCli ? (input) => runDashboardCodeReview(input, dashboardModel, npmCli) : undefined,
   store: {
@@ -120,6 +147,9 @@ function authorizedScope(assessmentId: string, targetUrl: string, attested: bool
   } catch { return null; }
 }
 
+app.get("/workspace/overview", async (request) => workspaceOverview(request.accountId));
+app.get("/workspace/review-models", async () => projectReviewCatalog());
+
 app.get("/health", async (_request, reply) => {
   let postgres = "unavailable";
   let redisStatus = "unavailable";
@@ -130,7 +160,7 @@ app.get("/health", async (_request, reply) => {
   return reply.code(healthy ? 200 : 503).send({ status: healthy ? "ok" : "degraded", services });
 });
 
-async function createIntake(projectName: string, repositoryPath: string, sourceType: "local_path" | "zip", sourcePath: string, targetUrl: string, runtimeDiscoveryAuthorized: boolean, request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply, aiReviewAuthorized = false) {
+async function createIntake(projectName: string, repositoryPath: string, sourceType: "local_path" | "zip", sourcePath: string, targetUrl: string, runtimeDiscoveryAuthorized: boolean, request: import("fastify").FastifyRequest, reply: import("fastify").FastifyReply, reviewProvider: ProjectReviewProvider | null = null) {
   const projectId = randomUUID();
   const assessmentId = randomUUID();
   const jobId = randomUUID();
@@ -142,13 +172,13 @@ async function createIntake(projectName: string, repositoryPath: string, sourceT
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
-    await client.query("INSERT INTO projects (id, name, repository_path, source_type, source_location, intake_status) VALUES ($1, $2, $3, $4, $5, 'queued')", [projectId, projectName, repositoryPath, sourceType, repositoryPath]);
+    await client.query("INSERT INTO projects (id, name, repository_path, source_type, source_location, intake_status, owner_account_id) VALUES ($1, $2, $3, $4, $5, 'queued', $6)", [projectId, projectName, repositoryPath, sourceType, repositoryPath, request.accountId]);
     await client.query("INSERT INTO assessments (id, project_id, target_url, status) VALUES ($1, $2, $3, 'queued')", [assessmentId, projectId, targetUrl]);
-    if (aiReviewAuthorized) await client.query("INSERT INTO project_code_reviews (assessment_id) VALUES ($1)", [assessmentId]);
+    if (reviewProvider) await client.query("INSERT INTO project_code_reviews (assessment_id,provider) VALUES ($1,$2)", [assessmentId, reviewProvider]);
     if (scope) await client.query("INSERT INTO discovery_scopes (id,assessment_id,scheme,host,port,path_mode,path_prefixes,allowed_methods,pinned_ips,policy_revision,policy_sha256,authorization_actor,authorized_at,expires_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)", [scope.scope_id,scope.assessment_id,scope.scheme,scope.host,scope.port,scope.path_mode,JSON.stringify(scope.path_prefixes),JSON.stringify(scope.allowed_methods),JSON.stringify(scope.pinned_ips),scope.policy_revision,scope.policy_sha256,scope.authorization_actor,scope.authorized_at,scope.expires_at]);
     await client.query("INSERT INTO tool_runs (id, assessment_id, tool_definition_id, status) VALUES ($1, $2, 'source-intake', 'queued')", [jobId, assessmentId]);
     await client.query("INSERT INTO audit_events (assessment_id, tool_run_id, actor, event_type, details) VALUES ($1, $2, 'api', 'intake.requested', $3)", [assessmentId, jobId, { source_type: sourceType }]);
-    await client.query("INSERT INTO audit_events (assessment_id, tool_run_id, actor, event_type, details) VALUES ($1, $2, 'api', 'intake.accepted', $3)", [assessmentId, jobId, { source_type: sourceType, discovery_scope_id: scope?.scope_id ?? null, scope_policy_sha256: scope?.policy_sha256 ?? null, discovery_profile: scope ? scope.policy_revision : null }]);
+    await client.query("INSERT INTO audit_events (assessment_id, tool_run_id, actor, event_type, details) VALUES ($1, $2, 'api', 'intake.accepted', $3)", [assessmentId, jobId, { source_type: sourceType, discovery_scope_id: scope?.scope_id ?? null, scope_policy_sha256: scope?.policy_sha256 ?? null, discovery_profile: scope ? scope.policy_revision : null, review_provider: reviewProvider }]);
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK");
@@ -164,7 +194,7 @@ async function createIntake(projectName: string, repositoryPath: string, sourceT
     await pool.query("UPDATE tool_runs SET status='failed', finished_at=now(), error='Queue unavailable' WHERE id=$1", [jobId]);
     await pool.query("UPDATE assessments SET status='failed', updated_at=now() WHERE id=$1", [assessmentId]);
     await pool.query("UPDATE projects SET intake_status='failed' WHERE id=$1", [projectId]);
-    if (aiReviewAuthorized) await pool.query("UPDATE project_code_reviews SET status='incomplete',reason='queue_unavailable',updated_at=now() WHERE assessment_id=$1", [assessmentId]);
+    if (reviewProvider) await pool.query("UPDATE project_code_reviews SET status='incomplete',reason='queue_unavailable',updated_at=now() WHERE assessment_id=$1", [assessmentId]);
     await pool.query("INSERT INTO audit_events (assessment_id, tool_run_id, actor, event_type, details) VALUES ($1, $2, 'api', 'intake.failed', $3)", [assessmentId, jobId, { reason: "queue unavailable" }]);
     request.log.error({ err: error }, "Queue unavailable");
     return reply.code(503).send({ detail: "Assessment saved but the queue is unavailable" });
@@ -212,17 +242,24 @@ app.post("/assessments/zip", async (request, reply) => {
   let targetUrl: string;
   try { targetUrl = parsed.data.target_url ? validateTarget(parsed.data.target_url) : ""; }
   catch { await rm(stagedPath, { force: true }).catch(() => undefined); await auditIntakeRejection("zip", "invalid_target").catch(() => undefined); return reply.code(422).send({ detail: "Invalid target" }); }
-  if (parsed.data.ai_review_authorized && !groqKey) {
+  const reviewProvider = parsed.data.ai_review_authorized
+    ? parsed.data.ai_review_provider ?? (projectReviewProvider === "groq" ? "groq" : null)
+    : null;
+  if (parsed.data.ai_review_authorized && !reviewProvider) {
     await rm(stagedPath, { force: true }).catch(() => undefined);
-    return reply.code(503).send({ detail: "Configure GROQ_API_KEY before enabling AI Code Review" });
+    return reply.code(409).send({ detail: "Choose an AI review model and confirm sharing again." });
   }
-  return createIntake(parsed.data.project_name, "ZIP upload", "zip", staged, targetUrl, parsed.data.runtime_discovery_authorized === true, request, reply, parsed.data.ai_review_authorized === true);
+  if (reviewProvider && !projectReviewKeys()[reviewProvider]) {
+    await rm(stagedPath, { force: true }).catch(() => undefined);
+    return reply.code(503).send({ detail: "The selected AI review model is unavailable. Choose a configured model." });
+  }
+  return createIntake(parsed.data.project_name, "ZIP upload", "zip", staged, targetUrl, parsed.data.runtime_discovery_authorized === true, request, reply, reviewProvider);
 });
 
-app.get("/assessments", async () => {
-  const result = await pool.query("SELECT a.id,p.name AS project_name,p.source_type,p.source_identity_type,p.source_identity,p.intake_status,a.target_url,a.status,a.coverage_status,a.created_at,(SELECT count(*) FROM discovered_routes r WHERE r.assessment_id=a.id)::int AS route_count,(SELECT COALESCE(jsonb_agg(x.route),'[]'::jsonb) FROM (SELECT jsonb_build_object('method',r.method,'path',r.path,'source_file',CASE WHEN r.source_file !~ '(^/|^[A-Za-z]:)' AND position(chr(92) in r.source_file)=0 AND r.source_file !~ '(^|/)\\.\\.(/|$)' THEN r.source_file ELSE NULL END,'source_line',r.source_line,'confidence',r.confidence) AS route FROM discovered_routes r WHERE r.assessment_id=a.id ORDER BY r.source_file,r.source_line NULLS LAST LIMIT 100) x) AS routes,(SELECT COALESCE(jsonb_agg(jsonb_build_object('name',t.name,'category',t.category,'confidence',t.confidence,'evidence',t.evidence,'reason',t.reason) ORDER BY t.category,t.name),'[]'::jsonb) FROM detected_technologies t WHERE t.assessment_id=a.id) AS technologies,(SELECT COALESCE(jsonb_agg(jsonb_build_object('severity',f.severity,'code',f.code,'message',f.message) ORDER BY f.id),'[]'::jsonb) FROM intake_findings f WHERE f.assessment_id=a.id) AS findings,(SELECT count(*)::int FROM normalized_findings nf WHERE nf.assessment_id=a.id) AS normalized_finding_count,(SELECT COALESCE(jsonb_object_agg(severity,finding_count),'{}'::jsonb) FROM (SELECT severity,count(*)::int AS finding_count FROM normalized_findings nf WHERE nf.assessment_id=a.id GROUP BY severity) sev) AS severity_counts FROM assessments a JOIN projects p ON p.id=a.project_id ORDER BY a.created_at DESC LIMIT 100");
+app.get("/assessments", async (request) => {
+  const result = await pool.query("SELECT a.id,p.name AS project_name,p.source_type,p.source_identity_type,p.source_identity,p.source_languages,p.intake_status,a.target_url,a.status,a.coverage_status,a.created_at,(SELECT count(*) FROM discovered_routes r WHERE r.assessment_id=a.id)::int AS route_count,(SELECT COALESCE(jsonb_agg(x.route),'[]'::jsonb) FROM (SELECT jsonb_build_object('method',r.method,'path',r.path,'source_file',CASE WHEN r.source_file !~ '(^/|^[A-Za-z]:)' AND position(chr(92) in r.source_file)=0 AND r.source_file !~ '(^|/)\\.\\.(/|$)' THEN r.source_file ELSE NULL END,'source_line',r.source_line,'confidence',r.confidence) AS route FROM discovered_routes r WHERE r.assessment_id=a.id ORDER BY r.source_file,r.source_line NULLS LAST LIMIT 100) x) AS routes,(SELECT COALESCE(jsonb_agg(jsonb_build_object('name',t.name,'category',t.category,'confidence',t.confidence,'evidence',t.evidence,'reason',t.reason) ORDER BY t.category,t.name),'[]'::jsonb) FROM detected_technologies t WHERE t.assessment_id=a.id) AS technologies,(SELECT COALESCE(jsonb_agg(jsonb_build_object('severity',f.severity,'code',f.code,'message',f.message) ORDER BY f.id),'[]'::jsonb) FROM intake_findings f WHERE f.assessment_id=a.id) AS findings,(SELECT count(*)::int FROM normalized_findings nf WHERE nf.assessment_id=a.id) AS normalized_finding_count,(SELECT COALESCE(jsonb_object_agg(severity,finding_count),'{}'::jsonb) FROM (SELECT severity,count(*)::int AS finding_count FROM normalized_findings nf WHERE nf.assessment_id=a.id GROUP BY severity) sev) AS severity_counts FROM assessments a JOIN projects p ON p.id=a.project_id WHERE p.owner_account_id=$1 ORDER BY a.created_at DESC LIMIT 100", [request.accountId]);
   const reviews = await pool.query(`
-    SELECT assessment_id,status,reason,updated_at,
+    SELECT assessment_id,status,reason,updated_at,pause_requested,cancel_requested,
            (report->>'total_files')::int AS total_files,
            jsonb_array_length(report->'reviewed_files') AS reviewed_files,
            jsonb_array_length(report->'findings') AS findings
@@ -238,7 +275,7 @@ app.get<{ Params: { assessment_id: string } }>("/assessments/:assessment_id", as
   const query = assessmentDetailQuerySchema.safeParse(request.query);
   if (!query.success) return reply.code(400).send({ detail: "Invalid pagination parameters" });
   const { limit, endpoint_cursor: endpointCursor, match_cursor: matchCursor } = query.data;
-  const result = await pool.query("SELECT a.id,p.name AS project_name,p.source_type,p.source_identity_type,p.source_identity,p.source_file_count,p.source_total_bytes,p.intake_status,a.target_url,a.status,a.coverage_status,a.created_at FROM assessments a JOIN projects p ON p.id=a.project_id WHERE a.id=$1", [id]);
+  const result = await pool.query("SELECT a.id,p.name AS project_name,p.source_type,p.source_identity_type,p.source_identity,p.source_file_count,p.source_total_bytes,p.source_languages,p.intake_status,a.target_url,a.status,a.coverage_status,a.created_at FROM assessments a JOIN projects p ON p.id=a.project_id WHERE a.id=$1", [id]);
   if (!result.rowCount) return reply.code(404).send({ detail: "Assessment not found" });
   const [jobs, technologies, routes, findings, artifacts, groups, scopes, endpoints, endpointCount, matches, matchCount, classCounts, reasonCounts, zapImport] = await Promise.all([
     pool.query("SELECT id,tool_definition_id AS tool,status,coverage_status,tool_version,adapter_version,config_id,config_sha256,exit_code,failure_reason_code,counters,provenance,started_at,finished_at,cancel_requested FROM tool_runs WHERE assessment_id=$1 ORDER BY created_at", [id]),

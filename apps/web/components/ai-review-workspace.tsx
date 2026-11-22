@@ -3,17 +3,19 @@
 import Link from 'next/link';
 import type { Assessment } from '@/lib/types';
 import { AiCodeReviewPanel } from './ai-code-review-panel';
-import { ProjectCodeReview, reviewStatusLabels } from './project-code-review';
+import { ProjectCodeReview, reviewStatusLabel } from './project-code-review';
 import styles from './review-workspace.module.css';
 
 export function AiReviewWorkspace({
   assessments,
   reviewId,
   loading,
+  onRefresh,
 }: {
   assessments: Assessment[];
   reviewId?: string;
   loading: boolean;
+  onRefresh: () => Promise<void>;
 }) {
   const reviews = assessments.flatMap((assessment) =>
     assessment.ai_review ? [{ ...assessment, review: assessment.ai_review }] : [],
@@ -21,7 +23,11 @@ export function AiReviewWorkspace({
   const selected = reviewId ? reviews.find(({ id }) => id === reviewId) : reviews[0];
 
   if (!loading && !reviewId && reviews.length === 0) {
-    return <div className={styles.surface}><AiCodeReviewPanel /></div>;
+    return (
+      <div className={styles.surface}>
+        <AiCodeReviewPanel />
+      </div>
+    );
   }
 
   return (
@@ -38,7 +44,7 @@ export function AiReviewWorkspace({
                 aria-current={selected?.id === id ? 'page' : undefined}
               >
                 <strong>{project_name}</strong>
-                <span>{reviewStatusLabels[review.status]}</span>
+                <span>{reviewStatusLabel(review)}</span>
               </Link>
             ))}
           </nav>
@@ -52,6 +58,7 @@ export function AiReviewWorkspace({
             assessmentId={selected.id}
             projectName={selected.project_name}
             summary={selected.review}
+            onRefresh={onRefresh}
           />
         ) : !loading && reviewId ? (
           <p role="status">This project review is not available in the current list.</p>

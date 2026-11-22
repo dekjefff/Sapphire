@@ -4,8 +4,11 @@ import { useState, type ReactNode } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { AppShell } from './app-shell';
+import { WorkspaceOverview } from './workspace-overview';
+import { UrlChecks } from './url-checks';
 import { AiReviewWorkspace } from './ai-review-workspace';
 import { AssessmentCard } from './assessment-card';
+import { StatusPill } from './status-pill';
 import Image from 'next/image';
 import { NewAssessmentForm } from './new-assessment-form';
 import { useAssessments } from '@/hooks/use-assessments';
@@ -13,32 +16,37 @@ import type { AssessmentInput } from '@/lib/types';
 import styles from './dashboard.module.css';
 
 const sections = [
+  { id: 'overview', label: 'Overview', title: 'Overview' },
   { id: 'recent', label: 'Projects', title: 'Projects' },
   { id: 'new', label: 'New assessment', title: 'Create an assessment' },
 ] as const;
 
 type DashboardProps = {
   account: ReactNode;
-  reviewProvider: NonNullable<AssessmentInput['ai_review_provider']>;
-  initialSection?: 'recent' | 'new' | 'review';
+  initialSection?: 'overview' | 'recent' | 'new' | 'review' | 'url-checks';
   reviewId?: string;
+  urlCheckScope: string;
 };
 
 export function Dashboard({
   account,
-  reviewProvider,
-  initialSection = 'recent',
+  initialSection = 'overview',
   reviewId,
+  urlCheckScope,
 }: DashboardProps) {
   const router = useRouter();
-  const { health, assessments, loadError, createAssessment } = useAssessments();
+  const { health, assessments, loadError, createAssessment, refresh } = useAssessments();
   const [section, setSection] = useState(initialSection);
   const [submissionError, setSubmissionError] = useState('');
   const [submissionMessage, setSubmissionMessage] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = assessments.find(({ id }) => id === selectedId);
   const heading =
-    section === 'review' ? 'AI Code Review' : sections.find(({ id }) => id === section)?.title;
+    section === 'review'
+      ? 'AI Code Review'
+      : section === 'url-checks'
+        ? 'URL checks'
+        : sections.find(({ id }) => id === section)?.title;
   const [page, setPage] = useState(0);
   const pageSize = 6;
   const currentPage = Math.min(page, Math.max(0, Math.ceil(assessments.length / pageSize) - 1));
@@ -70,8 +78,13 @@ export function Dashboard({
         <nav aria-label="Workspace sections" className={styles.menu}>
           <p className={styles.menuTitle}>Workspace</p>
           {sections.map(({ id, label }) =>
-            section === 'review' ? (
-              <Link key={id} href={id === 'recent' ? '/' : '/?section=new'}>
+            initialSection === 'review' || initialSection === 'url-checks' ? (
+              <Link
+                key={id}
+                href={
+                  id === 'overview' ? '/' : id === 'recent' ? '/?section=projects' : '/?section=new'
+                }
+              >
                 {label}
               </Link>
             ) : (
@@ -92,6 +105,9 @@ export function Dashboard({
           <Link href="/ai-review" aria-current={section === 'review' ? 'page' : undefined}>
             AI Code Review
           </Link>
+          <Link href="/url-checks" aria-current={section === 'url-checks' ? 'page' : undefined}>
+            URL checks
+          </Link>
         </nav>
       }
     >
@@ -100,12 +116,18 @@ export function Dashboard({
           className={
             section === 'new'
               ? `${styles.pageHeader} ${styles.assessmentColumn}`
-              : styles.pageHeader
+              : section === 'recent'
+                ? `${styles.pageHeader} ${styles.projectsColumn}`
+                : styles.pageHeader
           }
         >
           <h1 className={styles.heading}>{heading}</h1>
           {section === 'recent' && (
-            <button type="button" className={styles.whiteButton} onClick={() => setSection('new')}>
+            <button
+              type="button"
+              className="sapphire-primary-button"
+              onClick={() => setSection('new')}
+            >
               Create assessment
             </button>
           )}
@@ -119,16 +141,21 @@ export function Dashboard({
         </div>
       )}
 
+      {section === 'overview' && <WorkspaceOverview />}
+      {section === 'url-checks' && <UrlChecks storageScope={urlCheckScope} />}
       <div id="workspace-new" className={styles.assessmentColumn} hidden={section !== 'new'}>
         <NewAssessmentForm
-          reviewProvider={reviewProvider}
           disabled={health?.status !== 'ok'}
           error={submissionError}
           message={submissionMessage}
           onCreate={handleCreate}
         />
       </div>
-      <div id="workspace-recent" hidden={section !== 'recent'}>
+      <div
+        id="workspace-recent"
+        className={selected ? undefined : styles.projectsColumn}
+        hidden={section !== 'recent'}
+      >
         {section === 'recent' &&
           (selected ? (
             <div className={styles.projectDetails}>
@@ -164,14 +191,16 @@ export function Dashboard({
                           <Image
                             className={styles.folderArtwork}
                             src="/project-folder.svg"
-                            width={190}
-                            height={154}
+                            width={216}
+                            height={175}
                             alt=""
                             unoptimized
                           />
-                          <span className={styles.projectName}>{assessment.project_name}</span>
-                          <span className={styles.folderStatus} data-status={status}>
-                            {status}
+                          <span className={styles.projectName} title={assessment.project_name}>
+                            {assessment.project_name}
+                          </span>
+                          <span className={styles.folderStatus}>
+                            <StatusPill status={status} />
                           </span>
                         </button>
                       </li>
@@ -206,6 +235,7 @@ export function Dashboard({
       </div>
       {section === 'review' && (
         <AiReviewWorkspace
+          onRefresh={refresh}
           assessments={assessments}
           reviewId={reviewId}
           loading={!health && !loadError}

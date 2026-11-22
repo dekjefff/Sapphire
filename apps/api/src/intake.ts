@@ -10,7 +10,8 @@ export type IntakeSource = { type: "local_path"; path: string } | { type: "zip";
 export type Technology = { name: string; category: string; confidence: number; evidence: string[]; reason: string };
 export type DiscoveredRoute = { method: string; path: string; file: string; line: number | null; confidence: number };
 export type Finding = { severity: "warning" | "error"; code: string; message: string };
-export type IntakeResult = { sourceType: string; canonicalLocation: string; identityType: "git_commit" | "content_sha256"; identity: string; contentSha256: string; files: string[]; fileCount: number; totalBytes: number; scanRoot: string; temporaryRoot: string | null; technologies: Technology[]; routes: DiscoveredRoute[]; findings: Finding[] };
+export type SourceLanguage = { name: string; bytes: number };
+export type IntakeResult = { sourceType: string; canonicalLocation: string; identityType: "git_commit" | "content_sha256"; identity: string; contentSha256: string; files: string[]; fileCount: number; totalBytes: number; sourceLanguages: SourceLanguage[]; scanRoot: string; temporaryRoot: string | null; technologies: Technology[]; routes: DiscoveredRoute[]; findings: Finding[] };
 
 const excludedDirectoryNames = new Set([".git", "node_modules", ".next", "dist", "build", "vendor", "coverage", "out", ".turbo", ".cache", "target", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".gradle"]);
 type SkippedEntryReport = { total: number; entries: string[]; truncated: boolean; linkTotal: number; linkEntries: string[]; linkTruncated: boolean; categories: Map<string, number> };
@@ -82,10 +83,11 @@ export async function validateLocalPath(input: string): Promise<string> {
   return target!;
 }
 
-async function inventory(root: string, skipped: SkippedEntryReport): Promise<{ files: string[]; size: number; hash: string; commit: string | null }> {
+async function inventory(root: string, skipped: SkippedEntryReport): Promise<{ files: string[]; size: number; hash: string; commit: string | null; sourceLanguages: SourceLanguage[] }> {
   const files: string[] = [];
   let size = 0;
   const hash = createHash("sha256");
+  const bytesByLanguage = new Map<string, number>();
   async function walk(dir: string, depth: number): Promise<void> {
     if (depth > LIMITS.depth) fail("intake_limit_exceeded");
     const entries = await readdir(dir, { withFileTypes: true });
@@ -109,8 +111,13 @@ async function inventory(root: string, skipped: SkippedEntryReport): Promise<{ f
   for (const path of files) {
     const bytes = await readFile(join(root, ...path.split("/")));
     hash.update(path).update("\0").update(String(bytes.length)).update("\0").update(bytes).update("\0");
+    const language = sourceLanguage(path);
+    if (language && bytes.length) bytesByLanguage.set(language, (bytesByLanguage.get(language) ?? 0) + bytes.length);
   }
-  return { files, size, hash: hash.digest("hex"), commit: await gitHead(root) };
+  const sourceLanguages = [...bytesByLanguage.entries()]
+    .map(([name, bytes]) => ({ name, bytes }))
+    .sort((a, b) => b.bytes - a.bytes || a.name.localeCompare(b.name));
+  return { files, size, hash: hash.digest("hex"), commit: await gitHead(root), sourceLanguages };
 }
 
 async function gitHead(root: string): Promise<string | null> {
@@ -205,7 +212,24 @@ async function extractZip(archive: string, dest: string, skipped: SkippedEntryRe
   });
 }
 
-const extLanguage: Record<string, string> = { ".ts": "TypeScript", ".tsx": "TypeScript", ".js": "JavaScript", ".jsx": "JavaScript", ".py": "Python", ".go": "Go", ".rs": "Rust", ".java": "Java", ".php": "PHP", ".rb": "Ruby", ".cs": "C#", ".vue": "Vue", ".svelte": "Svelte" };
+const extLanguage = new Map(Object.entries({
+  ".ts": "TypeScript", ".tsx": "TypeScript", ".mts": "TypeScript", ".cts": "TypeScript",
+  ".js": "JavaScript", ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
+  ".py": "Python", ".go": "Go", ".rs": "Rust", ".java": "Java", ".php": "PHP", ".rb": "Ruby",
+  ".cs": "C#", ".vue": "Vue", ".svelte": "Svelte", ".astro": "Astro", ".mdx": "MDX",
+  ".css": "CSS", ".scss": "SCSS", ".sass": "Sass", ".less": "Less",
+  ".html": "HTML", ".htm": "HTML", ".sql": "SQL", ".sh": "Shell", ".bash": "Shell",
+  ".zsh": "Shell", ".ps1": "PowerShell", ".kt": "Kotlin", ".kts": "Kotlin", ".swift": "Swift",
+  ".dart": "Dart", ".c": "C", ".cpp": "C++", ".cc": "C++", ".cxx": "C++", ".hpp": "C++",
+  ".scala": "Scala", ".lua": "Lua", ".r": "R", ".ex": "Elixir", ".exs": "Elixir",
+  ".dockerfile": "Dockerfile",
+}));
+
+function sourceLanguage(path: string): string | undefined {
+  const name = basename(path).toLowerCase();
+  if (name === "dockerfile" || name === "containerfile") return "Dockerfile";
+  return extLanguage.get(extname(name));
+}
 
 type StaticImport = { specifier: string; exportName: string };
 type StaticRoute = { receiver: string; method: string; path: string; file: string; line: number };
@@ -593,7 +617,7 @@ async function detect(root: string, files: string[], skipped: SkippedEntryReport
     for (const [dep, name, category] of [["next", "Next.js", "framework"], ["express", "Express", "framework"], ["react", "React", "ui"], ["fastify", "Fastify", "framework"], ["@nestjs/core", "NestJS", "framework"]]) if (dep in deps) add(name, category, "package.json", `Dependency ${dep} declared`);
   }
   for (const file of files) {
-    const lang = extLanguage[extname(file).toLowerCase()]; if (lang) add(lang, "language", file, `Source file extension ${extname(file)}`, 0.75);
+    const lang = sourceLanguage(file); if (lang) add(lang, "language", file, `Source file extension ${extname(file)}`, 0.75);
     if (basename(file) === "Dockerfile" || file.endsWith("/Dockerfile")) add("Docker", "container", file, "Dockerfile present");
     if (/\.ya?ml$/i.test(file) && /openapi|swagger/i.test(file)) add("OpenAPI", "api_spec", file, "API specification filename");
     if (["go.mod", "Cargo.toml", "requirements.txt", "pyproject.toml", "composer.json", "Gemfile"].includes(basename(file))) add(({ "go.mod": "Go modules", "Cargo.toml": "Cargo", "requirements.txt": "pip", "pyproject.toml": "Python packaging", "composer.json": "Composer", Gemfile: "Bundler" } as Record<string, string>)[basename(file)], "package_manager", file, "Ecosystem manifest present", 0.9);
@@ -654,9 +678,9 @@ export async function inspectSource(source: IntakeSource, jobId: string): Promis
       const entries = await readdir(root, { withFileTypes: true });
       if (entries.length === 1 && entries[0].isDirectory()) root = join(root, entries[0].name);
     }
-    const { files, size, hash, commit } = await inventory(root, skipped);
+    const { files, size, hash, commit, sourceLanguages } = await inventory(root, skipped);
     const detected = await detect(root, files, skipped);
-    return { sourceType: source.type, canonicalLocation: source.type === "local_path" ? root : basename(source.path), identityType: commit ? "git_commit" : "content_sha256", identity: commit ?? hash, contentSha256: hash, files, fileCount: files.length, totalBytes: size, scanRoot: root, temporaryRoot, ...detected };
+    return { sourceType: source.type, canonicalLocation: source.type === "local_path" ? root : basename(source.path), identityType: commit ? "git_commit" : "content_sha256", identity: commit ?? hash, contentSha256: hash, files, fileCount: files.length, totalBytes: size, sourceLanguages, scanRoot: root, temporaryRoot, ...detected };
   } catch (error) {
     if (temporaryRoot) await rm(temporaryRoot, { recursive: true, force: true });
     throw error;

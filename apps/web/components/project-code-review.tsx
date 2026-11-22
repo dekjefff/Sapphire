@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useId, useState, type CSSProperties } from 'react';
-import { fetchProjectReview } from '@/lib/api';
+import { controlProjectReview, fetchProjectReview } from '@/lib/api';
 import type { ProjectReviewDetail, ProjectReviewSummary } from '@/lib/types';
 import { ReviewFindings } from './review-findings';
+import { StatusPill } from './status-pill';
 import styles from './review-workspace.module.css';
 
-export const reviewStatusLabels: Record<ProjectReviewSummary['status'], string> = {
+const reviewStatusLabels: Record<ProjectReviewSummary['status'], string> = {
   waiting_for_scans: 'Waiting for static scans',
   queued: 'Queued',
   running: 'Reviewing source',
@@ -14,6 +15,20 @@ export const reviewStatusLabels: Record<ProjectReviewSummary['status'], string> 
   incomplete: 'Incomplete',
   cancelled: 'Cancelled',
 };
+
+const activeStatuses = new Set<ProjectReviewSummary['status']>([
+  'waiting_for_scans',
+  'queued',
+  'running',
+]);
+
+export function reviewStatusLabel(summary: ProjectReviewSummary) {
+  if (activeStatuses.has(summary.status)) {
+    if (summary.cancel_requested) return 'Stopping…';
+    if (summary.pause_requested) return summary.status === 'running' ? 'Pausing…' : 'Paused';
+  }
+  return reviewStatusLabels[summary.status];
+}
 
 const filePageSize = 30;
 const retryableReasons = new Set([
@@ -62,10 +77,12 @@ export function ProjectCodeReview({
   assessmentId,
   projectName,
   summary,
+  onRefresh,
 }: {
   assessmentId: string;
   projectName: string;
   summary: ProjectReviewSummary;
+  onRefresh: () => Promise<void>;
 }) {
   const [report, setReport] = useState<ProjectReviewDetail | null>(null);
   const [error, setError] = useState('');
@@ -93,8 +110,25 @@ export function ProjectCodeReview({
     };
   }, [assessmentId, summary.updated_at, attempt]);
 
+  const [actionError, setActionError] = useState('');
+  const [pendingAction, setPendingAction] = useState<'pause' | 'resume' | 'stop' | null>(null);
+
+  async function changeReview(action: 'pause' | 'resume' | 'stop') {
+    setActionError('');
+    setPendingAction(action);
+    try {
+      await controlProjectReview(assessmentId, action);
+    } catch (cause) {
+      setActionError(cause instanceof Error ? cause.message : 'Could not update the review');
+    } finally {
+      await onRefresh();
+      setPendingAction(null);
+    }
+  }
+
   const result = report?.report;
-  const active = ['waiting_for_scans', 'queued', 'running'].includes(summary.status);
+  const active = activeStatuses.has(summary.status);
+  const held = active && summary.pause_requested && !summary.cancel_requested;
   const files = [
     ...(result?.pending_files ?? []).map(({ file, reason }) => ({
       file,
@@ -102,11 +136,13 @@ export function ProjectCodeReview({
       status:
         reason === 'cancelled' || summary.status === 'cancelled'
           ? 'Cancelled'
-          : active && retryableReasons.has(reason)
-            ? reason === 'partially_reviewed'
-              ? 'Partial'
-              : 'Queued'
-            : 'Incomplete',
+          : held && retryableReasons.has(reason)
+            ? 'Paused'
+            : active && !summary.cancel_requested && retryableReasons.has(reason)
+              ? reason === 'partially_reviewed'
+                ? 'Partial'
+                : 'Queued'
+              : 'Incomplete',
     })),
     ...(result?.reviewed_files ?? []).map((file) => ({
       file,
@@ -129,11 +165,47 @@ export function ProjectCodeReview({
                 : `${summary.reviewed_files ?? 0} / ${summary.total_files} files reviewed`}
             </p>
           </div>
-          <span className={styles.status} data-status={summary.status}>
-            {reviewStatusLabels[summary.status]}
-          </span>
+          <StatusPill
+            status={
+              active && summary.cancel_requested ? 'stopping' : held ? 'paused' : summary.status
+            }
+            label={reviewStatusLabel(summary)}
+            prominent
+          />
         </div>
-        {summary.reason && <p role="status">{labelReason(summary.reason)}</p>}
+        {active && !summary.cancel_requested && (
+          <div className={styles.reviewActions} role="group" aria-label="AI review controls">
+            <button
+              className={styles.control}
+              type="button"
+              disabled={pendingAction !== null || (held && summary.status === 'running')}
+              onClick={() => void changeReview(held ? 'resume' : 'pause')}
+            >
+              {held ? 'Resume' : 'Pause'}
+            </button>
+            <button
+              className={styles.control}
+              data-variant="stop"
+              type="button"
+              disabled={pendingAction !== null}
+              onClick={() => void changeReview('stop')}
+            >
+              Stop AI review
+            </button>
+          </div>
+        )}
+        {actionError && <p role="alert">{actionError}</p>}
+        {held && (
+          <p role="status">
+            Saved progress is kept. Resume within the original 48-hour review window.
+          </p>
+        )}
+        {active && summary.cancel_requested && (
+          <p role="status">Stopping the AI review. Saved findings will remain available.</p>
+        )}
+        {!held && (!active || !summary.cancel_requested) && summary.reason && (
+          <p role="status">{labelReason(summary.reason)}</p>
+        )}
         {error && (
           <div role="alert">
             <p>{error}</p>
@@ -267,9 +339,7 @@ function QueueRow({
           {active || status === 'Completed' ? '' : '–'}
         </span>
         <code>{file}</code>
-        <span className={styles.status} data-status={status.toLowerCase()}>
-          {status}
-        </span>
+        <StatusPill status={status.toLowerCase()} label={status} />
         <span className={styles.chevron} aria-hidden="true" />
       </button>
       <div id={panelId} aria-hidden={!open} data-open={open} className={styles.queueDetail}>

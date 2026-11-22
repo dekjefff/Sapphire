@@ -1,17 +1,21 @@
-import NextAuth, { customFetch } from 'next-auth';
-import Keycloak from 'next-auth/providers/keycloak';
+import NextAuth, { type DefaultSession } from 'next-auth';
+import Credentials from 'next-auth/providers/credentials';
+import { verifyAccount } from '@/lib/local-accounts';
+
+declare module 'next-auth' {
+  interface Session {
+    user: DefaultSession['user'] & { id: string };
+  }
+}
 
 export function authenticationConfigured() {
-  const { AUTH_SECRET, AUTH_URL, AUTH_KEYCLOAK_ID, AUTH_KEYCLOAK_SECRET, AUTH_KEYCLOAK_ISSUER } =
-    process.env;
+  const { AUTH_SECRET, AUTH_URL } = process.env;
   return Boolean(
     AUTH_SECRET &&
+    AUTH_SECRET.length >= 32 &&
     AUTH_URL &&
-    URL.canParse(AUTH_URL) &&
-    AUTH_KEYCLOAK_ID &&
-    AUTH_KEYCLOAK_SECRET &&
-    AUTH_KEYCLOAK_ISSUER &&
-    URL.canParse(AUTH_KEYCLOAK_ISSUER),
+    /^https?:\/\//.test(AUTH_URL) &&
+    URL.canParse(AUTH_URL),
   );
 }
 
@@ -19,33 +23,24 @@ export async function readOperatorSession() {
   return authenticationConfigured() ? auth() : null;
 }
 
-export const { auth, handlers, signIn, signOut } = NextAuth(() => {
-  const issuer = process.env.AUTH_KEYCLOAK_ISSUER;
-  const internalOrigin = process.env.SAPPHIRE_IDENTITY_INTERNAL_ORIGIN;
-  const providers = [
-    Keycloak({
-      issuer,
-      checks: ['pkce', 'state', 'nonce'],
-      [customFetch]: (input, init) => {
-        const url = new URL(input instanceof Request ? input.url : input);
-        if (!issuer || url.origin !== new URL(issuer).origin) {
-          throw new Error('Identity endpoint origin is not allowed');
-        }
-        const endpoint = internalOrigin ? new URL(url.pathname + url.search, internalOrigin) : url;
-        return fetch(endpoint, { ...init, redirect: 'error' });
-      },
+export const { auth, handlers, signIn, signOut } = NextAuth({
+  providers: [
+    Credentials({
+      credentials: { email: { type: 'email' }, password: { type: 'password' } },
+      authorize: ({ email, password }) =>
+        authenticationConfigured() ? verifyAccount(email, password) : null,
     }),
-  ];
-
-  return {
-    providers,
-    pages: { signIn: '/login', error: '/login' },
-    session: { strategy: 'jwt', maxAge: 60 * 60 },
-    callbacks: {
-      signIn({ profile }) {
-        const roles = profile?.sapphire_roles;
-        return Array.isArray(roles) && roles.includes('operator');
-      },
+  ],
+  pages: { signIn: '/login', error: '/login' },
+  session: { strategy: 'jwt', maxAge: 60 * 60 },
+  callbacks: {
+    jwt({ token, user }) {
+      if (user) token.sapphireLocalAccount = true;
+      return token.sapphireLocalAccount && token.sub ? token : null;
     },
-  };
+    session({ session, token }) {
+      if (token.sub) session.user.id = token.sub;
+      return session;
+    },
+  },
 });

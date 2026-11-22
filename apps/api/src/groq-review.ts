@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ReviewModelRequestError, type ReviewMetrics, type ReviewModel } from "./code-review.js";
 import { reviewInputSchema, reviewMessages, requestReviewJson } from "./review-model-request.js";
 
-const model = "openai/gpt-oss-20b";
+export const model = "openai/gpt-oss-20b";
 const endpoint = "https://api.groq.com/openai/v1/chat/completions";
 const { $schema, ...schema } = reviewInputSchema;
 const usageSchema = z.object({

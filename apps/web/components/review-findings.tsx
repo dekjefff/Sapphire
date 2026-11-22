@@ -1,6 +1,9 @@
 'use client';
 
 import { useState } from 'react';
+import type { SourceEvidenceContext } from '@/lib/types';
+import { ReviewCodeBlock } from './review-code-block';
+import { SeverityPill } from './status-pill';
 import styles from './review-workspace.module.css';
 
 type Finding = {
@@ -9,14 +12,17 @@ type Finding = {
   file: string;
   line: number;
   evidence: string;
+  evidence_context?: SourceEvidenceContext;
   remediation: string;
   related_static_finding_ids?: string[];
 };
 
+const findingsPerPage = 10;
 const levels = ['critical', 'high', 'medium', 'low', 'info'];
 
 export function ReviewFindings({ findings }: { findings: readonly Finding[] }) {
   const [filter, setFilter] = useState('all');
+  const [page, setPage] = useState(0);
   const counts = new Map<string, number>();
   for (const { severity } of findings) {
     const level = severity.toLowerCase();
@@ -28,6 +34,11 @@ export function ReviewFindings({ findings }: { findings: readonly Finding[] }) {
       ? findings
       : findings.filter(({ severity }) => severity.toLowerCase() === filter);
 
+  const pageCount = Math.ceil(visible.length / findingsPerPage);
+  const currentPage = Math.min(page, Math.max(pageCount - 1, 0));
+  const start = currentPage * findingsPerPage;
+  const end = Math.min(start + findingsPerPage, visible.length);
+
   return (
     <>
       <div className={styles.filters} role="group" aria-label="Filter findings by severity">
@@ -36,7 +47,10 @@ export function ReviewFindings({ findings }: { findings: readonly Finding[] }) {
             key={level}
             type="button"
             aria-pressed={level === filter}
-            onClick={() => setFilter(level)}
+            onClick={() => {
+              setFilter(level);
+              setPage(0);
+            }}
           >
             {level} <span>{level === 'all' ? findings.length : (counts.get(level) ?? 0)}</span>
           </button>
@@ -47,20 +61,18 @@ export function ReviewFindings({ findings }: { findings: readonly Finding[] }) {
       )}
       <p className={styles.muted} role="status">
         {visible.length
-          ? `${visible.length} findings shown`
+          ? `Showing ${start + 1}–${end} of ${visible.length} findings`
           : filter === 'all'
             ? 'No model findings reported.'
             : 'No findings at this severity.'}
       </p>
-      {visible.map((finding, index) => (
+      {visible.slice(start, end).map((finding, index) => (
         <details
           className={styles.finding}
-          key={`${finding.file}:${finding.line}:${index}:${filter}`}
+          key={`${finding.file}:${finding.line}:${start + index}:${filter}`}
         >
           <summary>
-            <span className={styles.severity} data-level={finding.severity.toLowerCase()}>
-              {finding.severity}
-            </span>
+            <SeverityPill level={finding.severity.toLowerCase()} />
             <span>
               <strong>{finding.title}</strong>
               <code>
@@ -69,7 +81,17 @@ export function ReviewFindings({ findings }: { findings: readonly Finding[] }) {
             </span>
           </summary>
           <div className={styles.evidence}>
-            <pre>{finding.evidence}</pre>
+            {finding.evidence && (
+              <ReviewCodeBlock
+                file={finding.file}
+                firstLine={finding.evidence_context?.first_line ?? finding.line}
+                citedLine={finding.line}
+                evidence={finding.evidence_context?.lines.join('\n') ?? finding.evidence}
+              />
+            )}
+            {finding.evidence && !finding.evidence_context && !/[\r\n]/.test(finding.evidence) && (
+              <p className={styles.muted}>Only the cited line was saved for this finding.</p>
+            )}
             <p>{finding.remediation}</p>
             {finding.related_static_finding_ids && (
               <p>
@@ -81,6 +103,29 @@ export function ReviewFindings({ findings }: { findings: readonly Finding[] }) {
           </div>
         </details>
       ))}
+      {pageCount > 1 && (
+        <nav className={styles.pagination} aria-label="Finding pages">
+          <button
+            type="button"
+            className={styles.control}
+            disabled={currentPage === 0}
+            onClick={() => setPage(currentPage - 1)}
+          >
+            Previous
+          </button>
+          <span>
+            Page {currentPage + 1} of {pageCount}
+          </span>
+          <button
+            type="button"
+            className={styles.control}
+            disabled={currentPage === pageCount - 1}
+            onClick={() => setPage(currentPage + 1)}
+          >
+            Next
+          </button>
+        </nav>
+      )}
     </>
   );
 }
